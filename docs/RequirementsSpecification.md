@@ -35,6 +35,10 @@
 *   **フロントエンド**: Streamlit
 *   **グラフ可視化**: Pyvis, streamlit-agraph
 
+本設計では以下のモデルを利用する。
+*   **大規模言語モデル (LLM)**: ollamaによる"gemma3:4b-it-qat"を利用する。
+*   **埋め込みモデル(embedding)**: all-MiniLM-L6-v2 (SentenceTransformer model)
+
 **3.2. 処理フロー概要**
 
 1.  **データインジェスト (バッチ処理)**
