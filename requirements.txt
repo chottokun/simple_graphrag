@@ -1,0 +1,13 @@
+langchain
+streamlit
+pytest
+python-dotenv
+langchain-community
+langchain-experimental
+pyvis
+streamlit-agraph
+unstructured
+pypdf
+neo4j
+langchain-neo4j
+langchain-ollama
