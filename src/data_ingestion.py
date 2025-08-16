@@ -26,9 +26,6 @@ class DataIngestor:
             llm: A language model instance for graph extraction.
             embeddings: An embedding model instance for vector indexing.
         """
-        if not isinstance(graph, Neo4jGraph):
-            raise TypeError("graph must be an instance of Neo4jGraph")
-
         self.graph = graph
         self.llm = llm
         self.embeddings = embeddings

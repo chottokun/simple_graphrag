@@ -1,6 +1,6 @@
 from langchain_community.vectorstores import Neo4jVector
-from langchain_neo4j import Neo4jGraph
-from langchain.chains import GraphCypherQAChain
+from langchain_community.graphs import Neo4jGraph
+from langchain_community.chains.graph_qa.cypher import GraphCypherQAChain
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.embeddings import Embeddings
 from langchain_core.runnables import Runnable
@@ -44,7 +44,8 @@ class QueryHandler:
         chain = GraphCypherQAChain.from_llm(
             llm=self.llm,
             graph=self.graph,
-            verbose=True
+            verbose=True,
+            allow_dangerous_requests=True
         )
         return chain
 
