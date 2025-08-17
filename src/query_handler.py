@@ -1,5 +1,4 @@
-from langchain_community.vectorstores import Neo4jVector
-from langchain_neo4j import Neo4jGraph
+from langchain_neo4j import Neo4jGraph, Neo4jVector
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.embeddings import Embeddings
 import re
@@ -31,7 +30,7 @@ class QueryHandler:
         self.embeddings = embeddings
         print("QueryHandler __init__ called.")
         try:
-            self.schema = self.graph.get_schema()
+            self.schema = self.graph.schema
             print(f"Schema set: {self.schema[:50]}...")
         except Exception as e:
             print(f"Error setting schema: {e}")
