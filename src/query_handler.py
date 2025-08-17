@@ -5,6 +5,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.runnables import Runnable, RunnablePassthrough, RunnableLambda
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from operator import itemgetter
 
 class QueryHandler:
     """
@@ -75,7 +76,8 @@ class QueryHandler:
 
     def get_full_chain(self) -> Runnable:
         """
-        Assembles and returns the full RAG chain.
+        Assembles and returns the full RAG chain, which now returns both
+        the text answer and the graph data for visualization.
         """
         prompt_template = PromptTemplate.from_template(
             """
@@ -98,36 +100,42 @@ class QueryHandler:
         vector_retriever = self.get_vector_retriever()
         cypher_chain = self.get_cypher_generation_chain()
 
-        def retrieve_context(inputs: dict) -> dict:
+        def retrieve_all_data(inputs: dict) -> dict:
             """
-            Takes the input dict (with a "question" key) and returns a dict
-            with all the necessary context for the prompt.
+            Fetches all necessary data: vector context and graph context.
+            It preserves the raw graph data for later visualization.
             """
             question = inputs["question"]
-
-            # Generate Cypher query
-            generated_cypher = cypher_chain.invoke({"question": question, "schema": self.schema})
-
-            # Retrieve context from both sources
+            generated_cypher = cypher_chain.invoke({"question": question})
             vector_context = vector_retriever.invoke(question)
             try:
-                graph_context = self.graph.query(generated_cypher)
-            except Exception:
-                graph_context = []
+                graph_data = self.graph.query(generated_cypher)
+            except Exception as e:
+                print(f"Graph query failed: {e}")
+                graph_data = []
 
-
-            # Return a dictionary with all keys required by the prompt
             return {
-                "vector_context": vector_context,
-                "graph_context": graph_context,
                 "question": question,
+                "vector_context": vector_context,
+                "graph_context": graph_data,
+                "graph_data_for_viz": graph_data,
             }
 
-        rag_chain = (
-            retrieve_context
+        answer_chain = (
+            itemgetter("context")
             | prompt_template
             | self.llm
             | StrOutputParser()
         )
-        
-        return rag_chain
+
+        chain = (
+            RunnablePassthrough.assign(context=RunnableLambda(retrieve_all_data))
+            .assign(answer=answer_chain)
+            | RunnableLambda(
+                lambda x: {
+                    "answer": x["answer"],
+                    "graph_data": x["context"]["graph_data_for_viz"],
+                }
+            )
+        )
+        return chain

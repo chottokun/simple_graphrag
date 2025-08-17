@@ -7,6 +7,7 @@ from langchain_community.document_loaders import PyPDFLoader, UnstructuredMarkdo
 from langchain_core.documents import Document
 from langchain_ollama.llms import OllamaLLM
 from langchain_ollama.embeddings import OllamaEmbeddings
+from streamlit_agraph import Node, Edge, agraph, Config
 
 from src.config import get_neo4j_credentials, get_ollama_config, load_app_config
 from src.query_handler import QueryHandler
@@ -146,16 +147,79 @@ def handle_ingestion():
 def handle_query(prompt: str):
     """
     Handles a user query, invokes the RAG chain, and updates the chat history.
+    The assistant's message will now contain the text answer and graph data.
     """
     # Add user message to chat history
     st.session_state.messages.append({"role": "user", "content": prompt})
 
     # Get the RAG chain and invoke it
     rag_chain = st.session_state.query_handler.get_full_chain()
-    response = rag_chain.invoke({"question": prompt})
+    response = rag_chain.invoke({"question": prompt})  # response is a dict
 
-    # Add assistant response to chat history
-    st.session_state.messages.append({"role": "assistant", "content": response})
+    # Add assistant response to chat history, including graph data
+    st.session_state.messages.append(
+        {
+            "role": "assistant",
+            "content": response.get("answer", "申し訳ありません、回答を生成できませんでした。"),
+            "graph_data": response.get("graph_data", []),
+        }
+    )
+
+# --- Helper Functions ---
+def format_graph_data(graph_data: list[dict]) -> tuple[list[Node], list[Edge]]:
+    """
+    Converts raw graph data from a Cypher query into lists of Node and Edge
+    objects for streamlit-agraph visualization.
+
+    Args:
+        graph_data: A list of dictionaries, where each dictionary represents
+                    a record from the graph query (e.g., {'n':..., 'r':..., 'm':...}).
+
+    Returns:
+        A tuple containing a list of unique Node objects and a list of Edge objects.
+    """
+    nodes = []
+    edges = []
+    node_ids = set()
+
+    if not isinstance(graph_data, list):
+        return nodes, edges
+
+    for record in graph_data:
+        source_node_data = record.get("n")
+        target_node_data = record.get("m")
+        relationship = record.get("r")
+
+        if not all((source_node_data, target_node_data, relationship)):
+            continue
+
+        source_id = source_node_data.get("id")
+        target_id = target_node_data.get("id")
+
+        if not all((source_id, target_id)):
+            continue
+
+        # Add nodes if they haven't been added yet
+        if source_id not in node_ids:
+            nodes.append(Node(id=source_id, label=source_id, size=15))
+            node_ids.add(source_id)
+
+        if target_id not in node_ids:
+            nodes.append(Node(id=target_id, label=target_id, size=15))
+            node_ids.add(target_id)
+
+        # Add the edge
+        try:
+            # Works for real Neo4j relationships and the test mock
+            rel_type = relationship.type
+        except AttributeError:
+            # Fallback for other potential structures
+            rel_type = str(relationship)
+
+        edges.append(Edge(source=source_id, target=target_id, label=rel_type))
+
+    return nodes, edges
+
 
 # --- Main Application ---
 def main():
@@ -178,15 +242,32 @@ def main():
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+            # If the message is from the assistant and has graph data, display it
+            if message["role"] == "assistant" and message.get("graph_data"):
+                with st.expander("関連グラフを見る"):
+                    graph_data = message["graph_data"]
+                    nodes, edges = format_graph_data(graph_data)
+                    if nodes:
+                        config = Config(
+                            width=750,
+                            height=300,
+                            directed=True,
+                            physics=True,
+                            hierarchical=False,
+                        )
+                        agraph(nodes=nodes, edges=edges, config=config)
+                    else:
+                        st.info("この回答に関連するグラフデータは見つかりませんでした。")
 
     # Accept user input
     if prompt := st.chat_input("質問を入力してください"):
+        # Display user message immediately
         st.chat_message("user").markdown(prompt)
-        with st.chat_message("assistant"):
-            with st.spinner("考え中..."):
-                handle_query(prompt)
-                response = st.session_state.messages[-1]["content"]
-                st.markdown(response)
+        # Handle the query and generate response in the backend
+        with st.spinner("考え中..."):
+            handle_query(prompt)
+        # Rerun the script to display the new assistant message from history
+        st.rerun()
 
 if __name__ == "__main__":
     main()
