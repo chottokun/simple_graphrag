@@ -259,17 +259,12 @@ def main():
                                 if nodes:
                                     config = Config(
                                         width=750,
-                                        height=400,
+                                        height=400 + i,  # Add index to height to create a unique config
                                         directed=True,
                                         physics=True,
                                         hierarchical=False,
                                     )
-                                    agraph(
-                                        nodes=nodes,
-                                        edges=edges,
-                                        config=config,
-                                        key=f"agraph_{i}",
-                                    )
+                                    agraph(nodes=nodes, edges=edges, config=config)
                                 else:
                                     st.info("関連するグラフデータは見つかりませんでした。")
                             else:
