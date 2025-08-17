@@ -2,10 +2,24 @@ from langchain_community.vectorstores import Neo4jVector
 from langchain_neo4j import Neo4jGraph
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.embeddings import Embeddings
+import re
 from langchain_core.runnables import Runnable, RunnablePassthrough, RunnableLambda
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from operator import itemgetter
+
+
+def _extract_cypher(text: str) -> str:
+    """
+    Extracts the Cypher query from a text that might contain markdown code blocks.
+    """
+    # Use a regular expression to find content within ```cypher ... ``` or ``` ... ```
+    match = re.search(r"```(?:cypher)?\s*\n(.*?)\n\s*```", text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    # If no markdown block is found, assume the entire text is the query
+    return text.strip()
+
 
 class QueryHandler:
     """
@@ -71,6 +85,7 @@ class QueryHandler:
             | cypher_generation_prompt
             | self.llm.bind(stop=["\nCypher:"])
             | StrOutputParser()
+            | RunnableLambda(_extract_cypher)
         )
         return cypher_generation_chain
 
