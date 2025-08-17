@@ -50,17 +50,17 @@ def test_retriever_creation(mock_graph, mock_llm, mock_embeddings):
 
 def test_full_chain_assembly_and_invocation(mock_graph, mock_llm, mock_embeddings):
     """
-    Tests that the full RAG chain is assembled and invokes its components correctly,
-    returning a dictionary with an answer and graph data.
+    Tests that the full RAG chain (with entity extraction) is assembled
+    and invokes its components correctly.
     """
     # Arrange
     # 1. Mock the sub-chains and their return values
     mock_retriever = MagicMock(spec=Runnable)
     mock_retriever.invoke.return_value = "Vector context"
 
-    # The cypher generation chain should return a string (the cypher query)
-    mock_cypher_generation_chain = MagicMock(spec=Runnable)
-    mock_cypher_generation_chain.invoke.return_value = "MATCH (n) RETURN n"
+    mock_entities = ["LangChain", "Neo4j"]
+    mock_entity_chain = MagicMock(spec=Runnable)
+    mock_entity_chain.invoke.return_value = mock_entities
 
     # 2. Mock the graph query result
     mock_graph_data = [{"n": "a", "r": "b", "m": "c"}]
@@ -69,9 +69,7 @@ def test_full_chain_assembly_and_invocation(mock_graph, mock_llm, mock_embedding
     # 3. Set up the handler and mock its component-getter methods
     handler = QueryHandler(graph=mock_graph, llm=mock_llm, embeddings=mock_embeddings)
     handler.get_vector_retriever = MagicMock(return_value=mock_retriever)
-    handler.get_cypher_generation_chain = MagicMock(
-        return_value=mock_cypher_generation_chain
-    )
+    handler.get_entity_extraction_chain = MagicMock(return_value=mock_entity_chain)
 
     # Act
     full_chain = handler.get_full_chain()
@@ -80,21 +78,29 @@ def test_full_chain_assembly_and_invocation(mock_graph, mock_llm, mock_embedding
     # Assert
     # 1. Check that the component getters were called
     handler.get_vector_retriever.assert_called_once()
-    handler.get_cypher_generation_chain.assert_called_once()
+    handler.get_entity_extraction_chain.assert_called_once()
 
-    # 2. Check that the retriever and cypher chain were invoked
+    # 2. Check that the retriever and entity chain were invoked
     mock_retriever.invoke.assert_called_with("test question")
-    mock_cypher_generation_chain.invoke.assert_called_with({"question": "test question"})
+    mock_entity_chain.invoke.assert_called_with({"question": "test question"})
 
-    # 3. Check that the graph query was run with the generated cypher
-    mock_graph.query.assert_called_once_with("MATCH (n) RETURN n")
+    # 3. Check that the graph query was run with the correct template and params
+    expected_query = """
+            MATCH (n)-[r]-(m)
+            WHERE n.id IN $entities OR m.id IN $entities
+            RETURN n, r, m
+            LIMIT 20
+        """
+    # We need to use mock_calls to check args and kwargs of the same call
+    call_args, call_kwargs = mock_graph.query.call_args
+    # Normalize whitespace in the query string for comparison
+    assert " ".join(call_args[0].split()) == " ".join(expected_query.split())
+    assert call_kwargs == {"params": {"entities": mock_entities}}
 
     # 4. Check that the final LLM was invoked.
     mock_llm.invoke.assert_called_once()
 
     # 5. Check that the final output is a dictionary with the correct structure
     assert isinstance(result, dict)
-    assert "answer" in result
-    assert "graph_data" in result
     assert result["answer"] == "Final Answer"  # From the mock_llm fixture
     assert result["graph_data"] == mock_graph_data

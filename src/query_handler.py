@@ -3,22 +3,11 @@ from langchain_neo4j import Neo4jGraph
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.embeddings import Embeddings
 import re
+import re
 from langchain_core.runnables import Runnable, RunnablePassthrough, RunnableLambda
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+from langchain_core.output_parsers import StrOutputParser, CommaSeparatedListOutputParser
 from operator import itemgetter
-
-
-def _extract_cypher(text: str) -> str:
-    """
-    Extracts the Cypher query from a text that might contain markdown code blocks.
-    """
-    # Use a regular expression to find content within ```cypher ... ``` or ``` ... ```
-    match = re.search(r"```(?:cypher)?\s*\n(.*?)\n\s*```", text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    # If no markdown block is found, assume the entire text is the query
-    return text.strip()
 
 
 class QueryHandler:
@@ -58,36 +47,26 @@ class QueryHandler:
         )
         return vector_store.as_retriever()
 
-    def get_cypher_generation_chain(self) -> Runnable:
+    def get_entity_extraction_chain(self) -> Runnable:
         """
-        Creates a chain to generate a Cypher query from a question.
+        Creates a chain to extract key entities from a question.
         """
-        cypher_generation_system_template = """
-        You are an expert Neo4j developer who writes Cypher based on a user's request.
-        Given a question, you need to write a Cypher query that can retrieve relevant information from the database.
-        The query should be as simple as possible and should not contain any explanations or apologies.
-
-        Schema:
-        {schema}
-
-        Question: {question}
-        Cypher Query:
-        """
-        cypher_generation_prompt = ChatPromptTemplate.from_messages([
-            ("system", cypher_generation_system_template),
-            ("human", "{question}")
-        ])
-
-        cypher_generation_chain = (
-            RunnablePassthrough.assign(
-                schema=lambda _: self.schema
-            )
-            | cypher_generation_prompt
-            | self.llm.bind(stop=["\nCypher:"])
-            | StrOutputParser()
-            | RunnableLambda(_extract_cypher)
+        entity_extraction_prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "You are an expert at extracting key entities, keywords, and proper nouns from a question. "
+                    "Extract a list of entities that are relevant for a graph database query. "
+                    "Return the entities as a comma-separated list. Do not add any explanation or apologies.",
+                ),
+                ("human", "Question: {question}"),
+            ]
         )
-        return cypher_generation_chain
+
+        entity_extraction_chain = (
+            entity_extraction_prompt | self.llm | CommaSeparatedListOutputParser()
+        )
+        return entity_extraction_chain
 
     def get_full_chain(self) -> Runnable:
         """
@@ -113,20 +92,33 @@ class QueryHandler:
         )
 
         vector_retriever = self.get_vector_retriever()
-        cypher_chain = self.get_cypher_generation_chain()
+        entity_chain = self.get_entity_extraction_chain()
+        graph_query_template = """
+            MATCH (n)-[r]-(m)
+            WHERE n.id IN $entities OR m.id IN $entities
+            RETURN n, r, m
+            LIMIT 20
+        """
 
         def retrieve_all_data(inputs: dict) -> dict:
             """
-            Fetches all necessary data: vector context and graph context.
-            It preserves the raw graph data for later visualization.
+            Extracts entities from the question and uses them to query the graph
+            with a safe, templated query.
             """
             question = inputs["question"]
-            generated_cypher = cypher_chain.invoke({"question": question})
+            try:
+                entities = entity_chain.invoke({"question": question})
+            except Exception as e:
+                print(f"Entity extraction failed: {e}")
+                entities = []
+
             vector_context = vector_retriever.invoke(question)
             try:
-                graph_data = self.graph.query(generated_cypher)
+                graph_data = self.graph.query(
+                    graph_query_template, params={"entities": entities}
+                )
             except Exception as e:
-                print(f"Graph query failed: {e}")
+                print(f"Templated graph query failed: {e}")
                 graph_data = []
 
             return {
