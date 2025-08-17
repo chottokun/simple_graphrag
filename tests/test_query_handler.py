@@ -6,13 +6,17 @@ from langchain_neo4j import Neo4jGraph
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.embeddings import Embeddings
 from langchain_core.runnables import Runnable
+from langchain_core.documents import Document
+
+from langchain_core.messages import AIMessage
+
 
 @pytest.fixture
 def mock_llm():
     """Fixture for a mocked LLM."""
     llm = MagicMock(spec=BaseLanguageModel)
-    # Configure the mock to return a string, as a real LLM would.
-    llm.invoke.return_value = "Final Answer"
+    # A real LLM returns a message object, which the StrOutputParser handles.
+    llm.invoke.return_value = AIMessage(content="Final Answer")
     return llm
 
 @pytest.fixture
@@ -45,38 +49,29 @@ def test_retriever_creation(mock_graph, mock_llm, mock_embeddings):
         mock_vector_store_instance.as_retriever.assert_called_once()
         assert retriever == mock_retriever
 
-def test_graph_cypher_chain_creation(mock_graph, mock_llm, mock_embeddings):
-    """
-    Tests that the GraphCypherQAChain is created correctly.
-    """
-    with patch('src.query_handler.GraphCypherQAChain') as MockCypherChain:
-        handler = QueryHandler(graph=mock_graph, llm=mock_llm, embeddings=mock_embeddings)
-        chain = handler.get_graph_cypher_chain()
-
-        MockCypherChain.from_llm.assert_called_once_with(
-            llm=mock_llm,
-            graph=mock_graph,
-            verbose=True
-        )
-        assert chain is not None
-
 def test_full_chain_assembly_and_invocation(mock_graph, mock_llm, mock_embeddings):
     """
-    Tests that the full RAG chain is assembled and invokes its components correctly.
+    Tests that the full RAG chain (with entity extraction) is assembled
+    and invokes its components correctly.
     """
     # Arrange
+    # 1. Mock the sub-chains and their return values
+    mock_docs = [Document(page_content="This is a test document.")]
     mock_retriever = MagicMock(spec=Runnable)
-    mock_retriever.invoke.return_value = "Vector context"
+    mock_retriever.invoke.return_value = mock_docs
 
-    mock_cypher_chain = MagicMock(spec=Runnable)
-    mock_cypher_chain.invoke.return_value = {"result": "Graph context"}
+    mock_entities = ["LangChain", "Neo4j"]
+    mock_entity_chain = MagicMock(spec=Runnable)
+    mock_entity_chain.invoke.return_value = mock_entities
 
-    # We don't need to patch the prompt template anymore, we'll let the real one be created.
+    # 2. Mock the graph query result
+    mock_graph_data = [{"n": "a", "r": "b", "m": "c"}]
+    mock_graph.query.return_value = mock_graph_data
+
+    # 3. Set up the handler and mock its component-getter methods
     handler = QueryHandler(graph=mock_graph, llm=mock_llm, embeddings=mock_embeddings)
-
-    # Mock the component getter methods to return our test doubles
     handler.get_vector_retriever = MagicMock(return_value=mock_retriever)
-    handler.get_graph_cypher_chain = MagicMock(return_value=mock_cypher_chain)
+    handler.get_entity_extraction_chain = MagicMock(return_value=mock_entity_chain)
 
     # Act
     full_chain = handler.get_full_chain()
@@ -85,15 +80,30 @@ def test_full_chain_assembly_and_invocation(mock_graph, mock_llm, mock_embedding
     # Assert
     # 1. Check that the component getters were called
     handler.get_vector_retriever.assert_called_once()
-    handler.get_graph_cypher_chain.assert_called_once()
+    handler.get_entity_extraction_chain.assert_called_once()
 
-    # 2. Check that the retriever and cypher chain were invoked with the question
+    # 2. Check that the retriever and entity chain were invoked
     mock_retriever.invoke.assert_called_with("test question")
-    mock_cypher_chain.invoke.assert_called_with({"query": "test question"})
+    mock_entity_chain.invoke.assert_called_with({"question": "test question"})
 
-    # 3. Check that the final LLM was invoked. The prompt content is implicitly tested
-    # by the fact that the chain ran without error and called the final LLM.
+    # 3. Check that the graph query was run with the correct template and params
+    expected_query = """
+            MATCH (n)-[r]-(m)
+            WHERE n.id IN $entities OR m.id IN $entities
+            RETURN n, r, m
+            LIMIT 20
+        """
+    # We need to use mock_calls to check args and kwargs of the same call
+    call_args, call_kwargs = mock_graph.query.call_args
+    # Normalize whitespace in the query string for comparison
+    assert " ".join(call_args[0].split()) == " ".join(expected_query.split())
+    assert call_kwargs == {"params": {"entities": mock_entities}}
+
+    # 4. Check that the final LLM was invoked.
     mock_llm.invoke.assert_called_once()
 
-    # 4. Check that the final output is the string from the mocked LLM via the StrOutputParser
-    assert result == "Final Answer"
+    # 5. Check that the final output is a dictionary with the correct structure
+    assert isinstance(result, dict)
+    assert result["answer"] == "Final Answer"  # From the mock_llm fixture
+    assert result["graph_data"] == mock_graph_data
+    assert result["vector_context"] == mock_docs

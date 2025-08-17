@@ -1,10 +1,13 @@
-from langchain_community.vectorstores import Neo4jVector
-from langchain_neo4j import Neo4jGraph
+from langchain_neo4j import Neo4jGraph, Neo4jVector
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.embeddings import Embeddings
+import re
+import re
 from langchain_core.runnables import Runnable, RunnablePassthrough, RunnableLambda
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+from langchain_core.output_parsers import StrOutputParser, CommaSeparatedListOutputParser
+from operator import itemgetter
+
 
 class QueryHandler:
     """
@@ -27,7 +30,7 @@ class QueryHandler:
         self.embeddings = embeddings
         print("QueryHandler __init__ called.")
         try:
-            self.schema = self.graph.get_schema()
+            self.schema = self.graph.schema
             print(f"Schema set: {self.schema[:50]}...")
         except Exception as e:
             print(f"Error setting schema: {e}")
@@ -43,39 +46,31 @@ class QueryHandler:
         )
         return vector_store.as_retriever()
 
-    def get_cypher_generation_chain(self) -> Runnable:
+    def get_entity_extraction_chain(self) -> Runnable:
         """
-        Creates a chain to generate a Cypher query from a question.
+        Creates a chain to extract key entities from a question.
         """
-        cypher_generation_system_template = """
-        You are an expert Neo4j developer who writes Cypher based on a user's request.
-        Given a question, you need to write a Cypher query that can retrieve relevant information from the database.
-        The query should be as simple as possible and should not contain any explanations or apologies.
-
-        Schema:
-        {schema}
-
-        Question: {question}
-        Cypher Query:
-        """
-        cypher_generation_prompt = ChatPromptTemplate.from_messages([
-            ("system", cypher_generation_system_template),
-            ("human", "{question}")
-        ])
-
-        cypher_generation_chain = (
-            RunnablePassthrough.assign(
-                schema=lambda _: self.schema
-            )
-            | cypher_generation_prompt
-            | self.llm.bind(stop=["\nCypher:"])
-            | StrOutputParser()
+        entity_extraction_prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "You are an expert at extracting key entities, keywords, and proper nouns from a question. "
+                    "Extract a list of entities that are relevant for a graph database query. "
+                    "Return the entities as a comma-separated list. Do not add any explanation or apologies.",
+                ),
+                ("human", "Question: {question}"),
+            ]
         )
-        return cypher_generation_chain
+
+        entity_extraction_chain = (
+            entity_extraction_prompt | self.llm | CommaSeparatedListOutputParser()
+        )
+        return entity_extraction_chain
 
     def get_full_chain(self) -> Runnable:
         """
-        Assembles and returns the full RAG chain.
+        Assembles and returns the full RAG chain, which now returns both
+        the text answer and the graph data for visualization.
         """
         prompt_template = PromptTemplate.from_template(
             """
@@ -96,38 +91,58 @@ class QueryHandler:
         )
 
         vector_retriever = self.get_vector_retriever()
-        cypher_chain = self.get_cypher_generation_chain()
+        entity_chain = self.get_entity_extraction_chain()
+        graph_query_template = """
+            MATCH (n)-[r]-(m)
+            WHERE n.id IN $entities OR m.id IN $entities
+            RETURN n, r, m
+            LIMIT 20
+        """
 
-        def retrieve_context(inputs: dict) -> dict:
+        def retrieve_all_data(inputs: dict) -> dict:
             """
-            Takes the input dict (with a "question" key) and returns a dict
-            with all the necessary context for the prompt.
+            Extracts entities from the question and uses them to query the graph
+            with a safe, templated query.
             """
             question = inputs["question"]
+            try:
+                entities = entity_chain.invoke({"question": question})
+            except Exception as e:
+                print(f"Entity extraction failed: {e}")
+                entities = []
 
-            # Generate Cypher query
-            generated_cypher = cypher_chain.invoke({"question": question, "schema": self.schema})
-
-            # Retrieve context from both sources
             vector_context = vector_retriever.invoke(question)
             try:
-                graph_context = self.graph.query(generated_cypher)
-            except Exception:
-                graph_context = []
+                graph_data = self.graph.query(
+                    graph_query_template, params={"entities": entities}
+                )
+            except Exception as e:
+                print(f"Templated graph query failed: {e}")
+                graph_data = []
 
-
-            # Return a dictionary with all keys required by the prompt
             return {
-                "vector_context": vector_context,
-                "graph_context": graph_context,
                 "question": question,
+                "vector_context": vector_context,
+                "graph_context": graph_data,
+                "graph_data_for_viz": graph_data,
             }
 
-        rag_chain = (
-            retrieve_context
+        answer_chain = (
+            itemgetter("context")
             | prompt_template
             | self.llm
             | StrOutputParser()
         )
-        
-        return rag_chain
+
+        chain = (
+            RunnablePassthrough.assign(context=RunnableLambda(retrieve_all_data))
+            .assign(answer=answer_chain)
+            | RunnableLambda(
+                lambda x: {
+                    "answer": x["answer"],
+                    "graph_data": x["context"]["graph_data_for_viz"],
+                    "vector_context": x["context"]["vector_context"],
+                }
+            )
+        )
+        return chain
