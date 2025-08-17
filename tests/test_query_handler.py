@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from src.query_handler import QueryHandler
-from langchain_community.graphs import Neo4jGraph
+from langchain_neo4j import Neo4jGraph
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.embeddings import Embeddings
 from langchain_core.runnables import Runnable

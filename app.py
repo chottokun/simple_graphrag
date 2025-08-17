@@ -1,7 +1,8 @@
 import streamlit as st
 import os
 import glob
-from langchain_community.graphs import Neo4jGraph
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_neo4j import Neo4jGraph
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredMarkdownLoader
 from langchain_core.documents import Document
 from langchain_ollama.llms import OllamaLLM
@@ -68,6 +69,7 @@ def initialize_session_state():
 def handle_ingestion():
     """
     Handles the data ingestion process based on files in the ./data directory.
+    Provides detailed progress feedback to the Streamlit UI.
     """
     data_path = "./data"
     if not os.path.exists(data_path):
@@ -81,32 +83,63 @@ def handle_ingestion():
         st.sidebar.warning(f"No Markdown or PDF files found in '{data_path}'.")
         return
 
-    documents = []
-    with st.spinner("Loading documents..."):
-        for md_file in md_files:
-            loader = UnstructuredMarkdownLoader(md_file)
-            documents.extend(loader.load())
-        for pdf_file in pdf_files:
-            loader = PyPDFLoader(pdf_file)
-            documents.extend(loader.load())
-
-    if not documents:
-        st.sidebar.error("Failed to load any documents.")
-        return
-
-    with st.spinner("Ingesting data into Neo4j... This may take a moment."):
+    with st.status("データ投入を開始します...", expanded=True) as status:
         try:
+            # --- ステップ0: ドキュメントの読み込み ---
+            status.update(label="ステップ 0/4: ドキュメントを読み込んでいます...")
+            documents = []
+            for md_file in md_files:
+                loader = UnstructuredMarkdownLoader(md_file)
+                documents.extend(loader.load())
+            for pdf_file in pdf_files:
+                loader = PyPDFLoader(pdf_file)
+                documents.extend(loader.load())
+
+            if not documents:
+                status.update(label="ドキュメントの読み込みに失敗しました。", state="error", expanded=False)
+                st.sidebar.error("Failed to load any documents.")
+                return
+            st.write(f"✓ {len(documents)}個のドキュメントを読み込みました。")
+
+            # --- ドキュメントの分割 ---
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
+            split_documents = text_splitter.split_documents(documents)
+            st.write(f"✓ {len(documents)}個のドキュメントを{len(split_documents)}個のチャンクに分割しました。")
+
             ingestor = DataIngestor(
                 graph=get_neo4j_graph(), llm=get_llm(), embeddings=get_embeddings()
             )
-            # 1. Process documents into graph structures
-            graph_documents = ingestor.process_documents(documents)
-            # 2. Store graph documents in Neo4j
+
+            # --- ステップ1: グラフ構造の処理 (最も時間がかかる部分) ---
+            status.update(label=f"ステップ 1/4: {len(split_documents)}個のチャンクをグラフ構造に変換しています...")
+            
+            graph_documents = []
+            progress_bar = st.progress(0, text="チャンクの処理状況")
+            
+            for i, doc in enumerate(split_documents):
+                graph_doc = ingestor.process_single_document(doc)
+                graph_documents.append(graph_doc)
+                progress = (i + 1) / len(split_documents)
+                progress_bar.progress(progress, text=f"チャンク {i + 1}/{len(split_documents)} を処理中")
+
+            st.write(f"✓ {len(split_documents)}個のチャンクから{len(graph_documents)}個のグラフドキュメントを生成しました。")
+
+            # --- ステップ2: Neo4jへの格納 ---
+            status.update(label="ステップ 2/4: グラフドキュメントをNeo4jに格納しています...")
             ingestor.store_graph_documents(graph_documents)
-            # 3. Create the vector index (This was the source of the error)
+            st.write("✓ グラフドキュメントをNeo4jに正常に格納しました。")
+
+            # --- ステップ3: ベクトルインデックスの作成 ---
+            status.update(label="ステップ 3/4: ベクトルインデックスを作成しています... (時間がかかる場合があります)")
             ingestor.create_vector_index()
+            st.write("✓ ベクトルインデックスを正常に作成しました。")
+
+            # --- 完了 ---
+            status.update(label="データ投入が完了しました！", state="complete", expanded=False)
             st.sidebar.success(f"Successfully ingested {len(documents)} documents!")
+
         except Exception as e:
+            status.update(label=f"エラーが発生しました: {e}", state="error", expanded=True)
             st.sidebar.error(f"An error occurred during ingestion: {e}")
 
 # --- Chat Logic ---
@@ -127,7 +160,7 @@ def handle_query(prompt: str):
 # --- Main Application ---
 def main():
     """The main function that runs the Streamlit application."""
-    st.title("グラフRAGシステム - 文書検索チャット")
+    st.title("graph RAG. chat.")
 
     # --- Sidebar for Data Ingestion ---
     with st.sidebar:

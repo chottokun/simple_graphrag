@@ -29,17 +29,29 @@ class DataIngestor:
         self.graph = graph
         self.llm = llm
         self.embeddings = embeddings
+        if llm:
+            self.llm_transformer = LLMGraphTransformer(llm=llm)
+        else:
+            self.llm_transformer = None
 
     def process_documents(self, documents: List[Document]) -> List:
         """
         Processes a list of documents to extract graph documents.
         Requires the LLM to be set during initialization.
         """
-        if not self.llm:
+        if not self.llm_transformer:
             raise ValueError("LLM must be provided during initialization to process documents.")
+        return self.llm_transformer.convert_to_graph_documents(documents)
 
-        llm_transformer = LLMGraphTransformer(llm=self.llm)
-        return llm_transformer.convert_to_graph_documents(documents)
+    def process_single_document(self, document: Document):
+        """
+        Processes a single document to extract a graph document.
+        Requires the LLM to be set during initialization.
+        """
+        if not self.llm_transformer:
+            raise ValueError("LLM must be provided during initialization to process a document.")
+        # The transformer returns a list, so we get the first element
+        return self.llm_transformer.convert_to_graph_documents([document])[0]
 
     def store_graph_documents(self, graph_documents: List) -> None:
         """

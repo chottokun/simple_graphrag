@@ -71,7 +71,7 @@
 *   **サンプルコード1: グラフ構築**
     ```python
     import os
-    from langchain_community.graphs import Neo4jGraph
+    from langchain_neo4j import Neo4jGraph
     from langchain_experimental.graph_transformers import LLMGraphTransformer
     from langchain_openai import ChatOpenAI
     from langchain_community.document_loaders import PyPDFLoader

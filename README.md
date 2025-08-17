@@ -1,4 +1,4 @@
-# 高度なグラフRAGシステム (Advanced GraphRAG System)
+# Hubrid Graph RAGシステム (Hybrid GraphRAG System)
 
 これは、`Neo4j`、`LangChain`、`Ollama` を使用して、高度な検索拡張生成（RAG）チャットシステムを実装するプロジェクトです。ベクトル検索と知識グラフ検索を組み合わせたハイブリッドアプローチを用いて、**アップロードされたドキュメント**から文脈的に豊かな回答を生成します。
 

@@ -1,10 +1,9 @@
 from langchain_community.vectorstores import Neo4jVector
-from langchain_community.graphs import Neo4jGraph
-from langchain_community.chains.graph_qa.cypher import GraphCypherQAChain
+from langchain_neo4j import Neo4jGraph
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.embeddings import Embeddings
-from langchain_core.runnables import Runnable
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import Runnable, RunnablePassthrough, RunnableLambda
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 class QueryHandler:
@@ -26,6 +25,13 @@ class QueryHandler:
         self.graph = graph
         self.llm = llm
         self.embeddings = embeddings
+        print("QueryHandler __init__ called.")
+        try:
+            self.schema = self.graph.get_schema()
+            print(f"Schema set: {self.schema[:50]}...")
+        except Exception as e:
+            print(f"Error setting schema: {e}")
+            self.schema = "" # Set to empty string to avoid AttributeError
 
     def get_vector_retriever(self) -> Runnable:
         """
@@ -37,23 +43,41 @@ class QueryHandler:
         )
         return vector_store.as_retriever()
 
-    def get_graph_cypher_chain(self) -> Runnable:
+    def get_cypher_generation_chain(self) -> Runnable:
         """
-        Creates and returns a GraphCypherQAChain.
+        Creates a chain to generate a Cypher query from a question.
         """
-        chain = GraphCypherQAChain.from_llm(
-            llm=self.llm,
-            graph=self.graph,
-            verbose=True,
-            allow_dangerous_requests=True
+        cypher_generation_system_template = """
+        You are an expert Neo4j developer who writes Cypher based on a user's request.
+        Given a question, you need to write a Cypher query that can retrieve relevant information from the database.
+        The query should be as simple as possible and should not contain any explanations or apologies.
+
+        Schema:
+        {schema}
+
+        Question: {question}
+        Cypher Query:
+        """
+        cypher_generation_prompt = ChatPromptTemplate.from_messages([
+            ("system", cypher_generation_system_template),
+            ("human", "{question}")
+        ])
+
+        cypher_generation_chain = (
+            RunnablePassthrough.assign(
+                schema=lambda _: self.schema
+            )
+            | cypher_generation_prompt
+            | self.llm.bind(stop=["\nCypher:"])
+            | StrOutputParser()
         )
-        return chain
+        return cypher_generation_chain
 
     def get_full_chain(self) -> Runnable:
         """
         Assembles and returns the full RAG chain.
         """
-        prompt_template = ChatPromptTemplate.from_template(
+        prompt_template = PromptTemplate.from_template(
             """
 あなたは社内文書や学術論文に詳しいアシスタントです。
 以下のコンテキスト情報を利用して、質問に答えてください。
@@ -72,7 +96,7 @@ class QueryHandler:
         )
 
         vector_retriever = self.get_vector_retriever()
-        cypher_chain = self.get_graph_cypher_chain()
+        cypher_chain = self.get_cypher_generation_chain()
 
         def retrieve_context(inputs: dict) -> dict:
             """
@@ -81,9 +105,16 @@ class QueryHandler:
             """
             question = inputs["question"]
 
+            # Generate Cypher query
+            generated_cypher = cypher_chain.invoke({"question": question, "schema": self.schema})
+
             # Retrieve context from both sources
             vector_context = vector_retriever.invoke(question)
-            graph_context = cypher_chain.invoke({"query": question}).get("result", "")
+            try:
+                graph_context = self.graph.query(generated_cypher)
+            except Exception:
+                graph_context = []
+
 
             # Return a dictionary with all keys required by the prompt
             return {
@@ -98,5 +129,5 @@ class QueryHandler:
             | self.llm
             | StrOutputParser()
         )
-
+        
         return rag_chain
