@@ -156,12 +156,13 @@ def handle_query(prompt: str):
     rag_chain = st.session_state.query_handler.get_full_chain()
     response = rag_chain.invoke({"question": prompt})  # response is a dict
 
-    # Add assistant response to chat history, including graph data
+    # Add assistant response to chat history, including all context
     st.session_state.messages.append(
         {
             "role": "assistant",
             "content": response.get("answer", "申し訳ありません、回答を生成できませんでした。"),
             "graph_data": response.get("graph_data", []),
+            "vector_context": response.get("vector_context", []),
         }
     )
 
@@ -242,22 +243,43 @@ def main():
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-            # If the message is from the assistant and has graph data, display it
-            if message["role"] == "assistant" and message.get("graph_data"):
-                with st.expander("関連グラフを見る"):
-                    graph_data = message["graph_data"]
-                    nodes, edges = format_graph_data(graph_data)
-                    if nodes:
-                        config = Config(
-                            width=750,
-                            height=300,
-                            directed=True,
-                            physics=True,
-                            hierarchical=False,
+            # If the message is from the assistant, display context sources
+            if message["role"] == "assistant":
+                graph_context = message.get("graph_data")
+                vector_context = message.get("vector_context")
+
+                if graph_context or vector_context:
+                    with st.expander("回答の根拠を見る (View Sources)"):
+                        tab1, tab2 = st.tabs(
+                            ["関連グラフ (Related Graph)", "参照ドキュメント (Referenced Docs)"]
                         )
-                        agraph(nodes=nodes, edges=edges, config=config)
-                    else:
-                        st.info("この回答に関連するグラフデータは見つかりませんでした。")
+                        with tab1:
+                            if graph_context:
+                                nodes, edges = format_graph_data(graph_context)
+                                if nodes:
+                                    config = Config(
+                                        width=750,
+                                        height=400,
+                                        directed=True,
+                                        physics=True,
+                                        hierarchical=False,
+                                    )
+                                    agraph(nodes=nodes, edges=edges, config=config)
+                                else:
+                                    st.info("関連するグラフデータは見つかりませんでした。")
+                            else:
+                                st.info("関連するグラフデータは見つかりませんでした。")
+
+                        with tab2:
+                            if vector_context:
+                                for doc in vector_context:
+                                    st.markdown(
+                                        f"**Source:** `{doc.metadata.get('source', 'N/A').split('/')[-1]}`"
+                                    )
+                                    st.markdown(f"> {doc.page_content.replace('_n', ' ')}")
+                                    st.divider()
+                            else:
+                                st.info("参照されたドキュメントはありません。")
 
     # Accept user input
     if prompt := st.chat_input("質問を入力してください"):

@@ -6,6 +6,7 @@ from langchain_neo4j import Neo4jGraph
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.embeddings import Embeddings
 from langchain_core.runnables import Runnable
+from langchain_core.documents import Document
 
 from langchain_core.messages import AIMessage
 
@@ -55,8 +56,9 @@ def test_full_chain_assembly_and_invocation(mock_graph, mock_llm, mock_embedding
     """
     # Arrange
     # 1. Mock the sub-chains and their return values
+    mock_docs = [Document(page_content="This is a test document.")]
     mock_retriever = MagicMock(spec=Runnable)
-    mock_retriever.invoke.return_value = "Vector context"
+    mock_retriever.invoke.return_value = mock_docs
 
     mock_entities = ["LangChain", "Neo4j"]
     mock_entity_chain = MagicMock(spec=Runnable)
@@ -104,3 +106,4 @@ def test_full_chain_assembly_and_invocation(mock_graph, mock_llm, mock_embedding
     assert isinstance(result, dict)
     assert result["answer"] == "Final Answer"  # From the mock_llm fixture
     assert result["graph_data"] == mock_graph_data
+    assert result["vector_context"] == mock_docs

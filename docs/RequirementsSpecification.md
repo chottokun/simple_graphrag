@@ -18,7 +18,7 @@
     3.  対話履歴を考慮したインタラクティブな応答。
 *   **UI要件 (Streamlit)**:
     1.  チャット形式の検索入力欄。
-    2.  検索結果に関連する知識グラフのインタラクティブな可視化。
+    2.  回答の根拠として、関連知識グラフのインタラクティブな可視化と、参照されたソースドキュメント（テキストチャンク）の一覧をタブ形式で表示する。
     3.  LLMが生成した回答と対話履歴の表示領域。
 *   **非機能要件**: 応答速度や同時接続数に厳しい制約は設けない（プロトタイプフェーズ）。
 
@@ -145,70 +145,87 @@
 ユーザーの質問に対して、構築したグラフとインデックスをフル活用して回答を生成する、システムの心臓部です。
 
 *   **手順**:
-    1.  ユーザーの質問から、`LLM`の構造化出力機能などを用いて重要なエンティティを抽出します。
+    1.  **キーワード抽出**: ユーザーの質問から、LLMを用いてキーワードやエンティティをリストとして抽出します。これにより、LLMに自由なCypherクエリを生成させるリスクを回避し、システムの安定性を高めます。
     2.  **ベクトル検索**: 質問全体をベクトル化し、`vector_store.similarity_search`で関連性の高い`Document`チャンクを取得します。
-    3.  **グラフ検索**: 抽出したエンティティを起点に、Cypherクエリで関連情報を探索します。例えば、そのエンティティに言及している他の文書や、直接関連する他のエンティティを探します。[blog.langchain.com]
-    4.  両方の検索結果を統合し、構造化されたコンテキストとしてプロンプトにまとめ、最終的な回答を生成させます。
+    3.  **グラフ検索**: 抽出したエンティティリストをパラメータとして使用し、予め定義された安全なCypherクエリテンプレートを実行します。これにより、抽出されたエンティティに関連するノードと関係性を取得します。
+    4.  **コンテキスト統合と回答生成**: ベクトル検索とグラフ検索の両方の結果を統合し、構造化されたコンテキストとしてプロンプトにまとめ、最終的な回答をLLMに生成させます。
 
-*   **サンプルコード3: 検索と応答生成チェーン**
+*   **サンプルコード3: 検索と応答生成チェーン（エンティティ抽出方式）**
     ```python
-    from langchain.chains import GraphCypherQAChain
-    from langchain_core.prompts import PromptTemplate
-    from langchain_core.runnables import RunnablePassthrough
-    from langchain_core.output_parsers import StrOutputParser
+    from operator import itemgetter
+    from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
+    from langchain_core.runnables import Runnable, RunnablePassthrough, RunnableLambda
+    from langchain_core.output_parsers import StrOutputParser, CommaSeparatedListOutputParser
 
     # (上記で初期化した graph, llm, vector_store を利用)
 
-    # --- 1. グラフ検索用のチェーン ---
-    cypher_chain = GraphCypherQAChain.from_llm(
-        graph=graph,
-        llm=llm,
-        verbose=True # 実行されるCypherクエリを確認できる
-    )
+    # --- 1. エンティティ抽出チェーン ---
+    entity_extraction_prompt = ChatPromptTemplate.from_messages([
+        ("system", "You are an expert at extracting key entities from a question."),
+        ("human", "Extract a comma-separated list of entities from the following question: {question}")
+    ])
+    entity_chain = entity_extraction_prompt | llm | CommaSeparatedListOutputParser()
 
     # --- 2. ベクトル検索用のリトリーバー ---
     retriever = vector_store.as_retriever()
 
-    # --- 3. プロンプトテンプレート ---
+    # --- 3. グラフ検索用のテンプレートクエリ ---
+    graph_query_template = """
+        MATCH (n)-[r]-(m)
+        WHERE n.id IN $entities OR m.id IN $entities
+        RETURN n, r, m LIMIT 10
+    """
+
+    # --- 4. 全体を統合したチェーン ---
+    def retrieve_all_data(inputs: dict) -> dict:
+        question = inputs["question"]
+        entities = entity_chain.invoke({"question": question})
+        vector_context = retriever.invoke(question)
+        graph_data = graph.query(graph_query_template, params={"entities": entities})
+        return {
+            "question": question,
+            "vector_context": vector_context,
+            "graph_context": graph_data,
+            "graph_data_for_viz": graph_data, # 可視化用に生のグラフデータを保持
+        }
+
     prompt_template = PromptTemplate.from_template(
         """
 あなたは社内文書や学術論文に詳しいアシスタントです。
 以下のコンテキスト情報を利用して、質問に答えてください。
-
 **ベクトル検索の結果 (文書の断片):**
 {vector_context}
-
 **グラフ検索の結果 (関連エンティティや関係):**
 {graph_context}
-
-**質問:**
-{question}
-
+**質問:** {question}
 **回答:**
 """
     )
     
-    # --- 4. 全体を統合したチェーン ---
-    def retrieve_context(question: str):
-        vector_context = retriever.invoke(question)
-        graph_context = cypher_chain.invoke({"query": question})
-        return {
-            "vector_context": vector_context,
-            "graph_context": graph_context.get("result", ""),
-            "question": question
-        }
-
-    rag_chain = (
-        RunnablePassthrough.assign(context=lambda x: retrieve_context(x["question"]))
+    answer_chain = (
+        itemgetter("context")
         | prompt_template
         | llm
         | StrOutputParser()
     )
 
+    rag_chain = (
+        RunnablePassthrough.assign(context=RunnableLambda(retrieve_all_data))
+        .assign(answer=answer_chain)
+        | RunnableLambda(
+            lambda x: {
+                "answer": x["answer"],
+                "graph_data": x["context"]["graph_data_for_viz"],
+                "vector_context": x["context"]["vector_context"],
+            }
+        )
+    )
+
     # --- 5. チェーンの実行 ---
-    question = "LangChainのLLMGraphTransformerについて教えてください。"
-    answer = rag_chain.invoke({"question": question})
-    print(answer)
+    question = "LangChainとNeo4jの関係について教えてください。"
+    response = rag_chain.invoke({"question": question})
+    print(f"Answer: {response['answer']}")
+    print(f"Graph Data: {response['graph_data']}")
     ```
 
 **4.4. フェーズ4: UI (Streamlit) の実装**
@@ -216,17 +233,17 @@
 ユーザーとの対話を実現するフロントエンドを構築します。
 
 *   **手順**:
-    1.  `st.chat_input`と`st.chat_message`を使い、基本的なチャットUIを実装します。[medium.com]
+    1.  `st.chat_input`と`st.chat_message`を使い、基本的なチャットUIを実装します。
     2.  セッション状態（`st.session_state`）を利用して、会話履歴を保持します。
-    3.  バックエンドのRAGチェーンを呼び出し、回答を表示します。
-    4.  グラフ可視化には`streamlit-agraph`などのライブラリを使い、検索結果に関連するグラフの一部をインタラクティブに表示します。
+    3.  バックエンドのRAGチェーンを呼び出し、回答と関連コンテキスト（グラフデータ、ベクトル検索結果）を取得します。
+    4.  回答のテキストを表示し、`st.expander`と`st.tabs`を用いて、回答の根拠となった「関連グラフ」と「参照ドキュメント」を切り替えて表示できるようにします。
 
 *   **サンプルコード4: Streamlit UIの骨格**
     ```python
     import streamlit as st
     from streamlit_agraph import agraph, Node, Edge, Config
 
-    # (上記の rag_chain と graph をバックエンドとして利用)
+    # (上記の rag_chain と、それを呼び出す handle_query 関数をバックエンドとして利用)
 
     st.title("グラフRAGシステム - 文書検索チャット")
 
@@ -238,48 +255,28 @@
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+            # アシスタントのメッセージの場合、根拠データを表示する
+            if message["role"] == "assistant":
+                graph_context = message.get("graph_data")
+                vector_context = message.get("vector_context")
+
+                if graph_context or vector_context:
+                    with st.expander("回答の根拠を見る"):
+                        tab1, tab2 = st.tabs(["関連グラフ", "参照ドキュメント"])
+                        with tab1:
+                            # ... (format_graph_data関数を呼び出し、agraphで可視化)
+                            st.info("ここにグラフが表示されます。")
+                        with tab2:
+                            # ... (vector_contextをループして表示)
+                            st.info("ここに参照ドキュメントが表示されます。")
 
     # ユーザーからの入力
     if prompt := st.chat_input("質問を入力してください"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        with st.chat_message("assistant"):
-            with st.spinner("考え中..."):
-                # バックエンドのRAGチェーンを呼び出し
-                response = rag_chain.invoke({"question": prompt})
-                st.markdown(response)
-
-                # 関連グラフの可視化 (簡易版)
-                # 実際には、responseからエンティティを抽出し、その近傍を可視化する
-                try:
-                    cypher_result = graph.query(
-                        "MATCH (n)-[r]-(m) WHERE n.id CONTAINS $query RETURN n,r,m LIMIT 10",
-                        {"query": prompt.split()[0]} # クエリの最初の単語で検索
-                    )
-                    
-                    nodes = []
-                    edges = []
-                    node_ids = set()
-                    
-                    for record in cypher_result:
-                        if record["n"]["id"] not in node_ids:
-                            nodes.append(Node(id=record["n"]["id"], label=record["n"]["id"], size=15))
-                            node_ids.add(record["n"]["id"])
-                        if record["m"]["id"] not in node_ids:
-                            nodes.append(Node(id=record["m"]["id"], label=record["m"]["id"], size=15))
-                            node_ids.add(record["m"]["id"])
-                        
-                        edges.append(Edge(source=record["n"]["id"], target=record["m"]["id"], label=record["r"].type))
-
-                    if nodes:
-                        config = Config(width=750, height=300, directed=True, physics=True, hierarchical=False)
-                        agraph(nodes=nodes, edges=edges, config=config)
-                except Exception as e:
-                    st.error(f"グラフの可視化中にエラーが発生しました: {e}")
-
-        st.session_state.messages.append({"role": "assistant", "content": response})
+        st.chat_message("user").markdown(prompt)
+        # バックエンド処理とUIの再描画
+        with st.spinner("考え中..."):
+            handle_query(prompt) # rag_chainを呼び出し、session_stateを更新
+        st.rerun()
 
     ```
 

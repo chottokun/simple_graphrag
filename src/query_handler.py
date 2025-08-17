@@ -142,6 +142,7 @@ class QueryHandler:
                 lambda x: {
                     "answer": x["answer"],
                     "graph_data": x["context"]["graph_data_for_viz"],
+                    "vector_context": x["context"]["vector_context"],
                 }
             )
         )

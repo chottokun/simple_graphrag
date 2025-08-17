@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 import streamlit as st
 from streamlit_agraph import Node, Edge
+from langchain_core.documents import Document
 
 # Import the functions to be tested from app.py
 from app import handle_query, initialize_session_state, format_graph_data
@@ -20,10 +21,12 @@ def test_handle_query():
     """
     # Arrange
     mock_chain = MagicMock()
-    # The chain now returns a dictionary
+    # The chain now returns a dictionary with all context
+    mock_docs = [Document(page_content="doc content")]
     mock_chain.invoke.return_value = {
         "answer": "This is the final answer.",
-        "graph_data": [{"n": "a", "r": "b", "m": "c"}], # Dummy graph data
+        "graph_data": [{"n": "a", "r": "b", "m": "c"}],
+        "vector_context": mock_docs,
     }
 
     mock_query_handler = MagicMock()
@@ -51,6 +54,8 @@ def test_handle_query():
     assert st.session_state.messages[1]["content"] == "This is the final answer."
     assert "graph_data" in st.session_state.messages[1]
     assert st.session_state.messages[1]["graph_data"] is not None
+    assert "vector_context" in st.session_state.messages[1]
+    assert st.session_state.messages[1]["vector_context"] == mock_docs
 
 @patch('app.Neo4jGraph')
 @patch('app.OllamaLLM')
