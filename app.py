@@ -240,7 +240,7 @@ def main():
     initialize_session_state()
 
     # Display chat messages from history
-    for message in st.session_state.messages:
+    for i, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
             # If the message is from the assistant, display context sources
@@ -264,7 +264,12 @@ def main():
                                         physics=True,
                                         hierarchical=False,
                                     )
-                                    agraph(nodes=nodes, edges=edges, config=config)
+                                    agraph(
+                                        nodes=nodes,
+                                        edges=edges,
+                                        config=config,
+                                        key=f"agraph_{i}",
+                                    )
                                 else:
                                     st.info("関連するグラフデータは見つかりませんでした。")
                             else:
