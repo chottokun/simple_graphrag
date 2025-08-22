@@ -86,7 +86,7 @@ def handle_ingestion():
             st.write(f"✓ {len(documents)}個のドキュメントを読み込みました。")
 
             # --- ドキュメントの分割 ---
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=4000, chunk_overlap=200)
             split_documents = text_splitter.split_documents(documents)
             st.write(f"✓ {len(documents)}個のドキュメントを{len(split_documents)}個のチャンクに分割しました。")
 

@@ -18,7 +18,7 @@
 
 `DataIngestor`クラスは、ドキュメントの読み込み、チャンク分割、グラフ構造への変換、およびNeo4jへの格納を担当します。
 
-*   **LLMGraphTransformerの強化**: `LLMGraphTransformer`は、LLMを用いてドキュメントチャンクからエンティティと関係性を抽出します。本システムでは、`src/config.py`で定義された`GRAPH_ALLOWED_NODES`および`GRAPH_ALLOWED_RELATIONSHIPS`環境変数を通じて、抽出を許可するノードタイプと関係性タイプを制御できるようになりました。これにより、抽出の精度と一貫性が向上します。
+*   **LLMGraphTransformerの強化**: `LLMGraphTransformer`は、LLMを用いてドキュメントチャンクからエンティティと関係性を抽出します。本システムでは、`src/config.py`で定義された`GRAPH_ALLOWED_NODES`および`GRAPH_ALLOWED_RELATIONSHIPS`環境変数を通じて、抽出を許可するノードタイプと関係性タイプを制御できるようになりました。このスキーマ管理戦略の詳細については、[スキーマ管理ドキュメント](./SchemaManagement.md)を参照してください。これにより、抽出の精度と一貫性が向上します。
 
 ### 2.2. クエリハンドリング (`src/query_handler.py`)
 
