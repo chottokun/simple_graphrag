@@ -1,6 +1,7 @@
 from langchain_neo4j import Neo4jGraph, Neo4jVector
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.embeddings import Embeddings
+from langchain_community.chains.graph_qa.cypher import GraphCypherQAChain
 import re
 import re
 from langchain_core.runnables import Runnable, RunnablePassthrough, RunnableLambda
@@ -46,27 +47,6 @@ class QueryHandler:
         )
         return vector_store.as_retriever()
 
-    def get_entity_extraction_chain(self) -> Runnable:
-        """
-        Creates a chain to extract key entities from a question.
-        """
-        entity_extraction_prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    "You are an expert at extracting key entities, keywords, and proper nouns from a question. "
-                    "Extract a list of entities that are relevant for a graph database query. "
-                    "Return the entities as a comma-separated list. Do not add any explanation or apologies.",
-                ),
-                ("human", "Question: {question}"),
-            ]
-        )
-
-        entity_extraction_chain = (
-            entity_extraction_prompt | self.llm | CommaSeparatedListOutputParser()
-        )
-        return entity_extraction_chain
-
     def get_full_chain(self) -> Runnable:
         """
         Assembles and returns the full RAG chain, which now returns both
@@ -91,13 +71,13 @@ class QueryHandler:
         )
 
         vector_retriever = self.get_vector_retriever()
-        entity_chain = self.get_entity_extraction_chain()
-        graph_query_template = """
-            MATCH (n)-[r]-(m)
-            WHERE n.id IN $entities OR m.id IN $entities
-            RETURN n, r, m
-            LIMIT 20
-        """
+
+        # Initialize GraphCypherQAChain
+        cypher_qa_chain = GraphCypherQAChain.from_llm(
+            graph=self.graph,
+            llm=self.llm,
+            verbose=True  # Set to True for debugging to see generated Cypher queries
+        )
 
         def retrieve_all_data(inputs: dict) -> dict:
             """
@@ -105,26 +85,30 @@ class QueryHandler:
             with a safe, templated query.
             """
             question = inputs["question"]
-            try:
-                entities = entity_chain.invoke({"question": question})
-            except Exception as e:
-                print(f"Entity extraction failed: {e}")
-                entities = []
 
             vector_context = vector_retriever.invoke(question)
+            
+            # Use GraphCypherQAChain to get graph context and data
             try:
-                graph_data = self.graph.query(
-                    graph_query_template, params={"entities": entities}
-                )
+                cypher_qa_result = cypher_qa_chain.invoke({"query": question})
+                graph_context = cypher_qa_result.get("result", "")
+                # GraphCypherQAChain returns the answer, not raw graph data for viz directly.
+                # For visualization, we might need to parse the generated Cypher query or
+                # execute a separate query to get the graph data based on the entities identified by the chain.
+                # For now, we'll just pass the result as graph_context.
+                # A more advanced implementation would involve extracting the Cypher query from the chain's output
+                # and executing it to get the graph data for visualization.
+                graph_data_for_viz = graph_context # Placeholder, needs refinement for actual graph data
             except Exception as e:
-                print(f"Templated graph query failed: {e}")
-                graph_data = []
+                print(f"GraphCypherQAChain failed: {e}")
+                graph_context = ""
+                graph_data_for_viz = []
 
             return {
                 "question": question,
                 "vector_context": vector_context,
-                "graph_context": graph_data,
-                "graph_data_for_viz": graph_data,
+                "graph_context": graph_context,
+                "graph_data_for_viz": graph_data_for_viz,
             }
 
         answer_chain = (

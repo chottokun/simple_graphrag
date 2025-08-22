@@ -58,27 +58,30 @@ def test_handle_query():
     assert st.session_state.messages[1]["vector_context"] == mock_docs
 
 @patch('app.Neo4jGraph')
-@patch('app.OllamaLLM')
-@patch('app.OllamaEmbeddings')
+@patch('app.get_llm_and_embeddings_cached')
 @patch('app.QueryHandler')
-def test_initialize_session_state(MockQueryHandler, MockEmbeddings, MockLLM, MockNeo4jGraph):
+def test_initialize_session_state(MockQueryHandler, mock_get_llm_and_embeddings_cached, MockNeo4jGraph):
     """
     Tests that the session state is initialized correctly by mocking all external dependencies.
     """
+    # Arrange
+    mock_llm = MagicMock()
+    mock_embeddings = MagicMock()
+    mock_get_llm_and_embeddings_cached.return_value = (mock_llm, mock_embeddings)
+
     # Act
     initialize_session_state()
 
     # Assert
     # Check that dependencies were instantiated
     MockNeo4jGraph.assert_called_once()
-    MockLLM.assert_called_once()
-    MockEmbeddings.assert_called_once()
+    mock_get_llm_and_embeddings_cached.assert_called_once()
 
     # Check that QueryHandler was instantiated with the mocked dependencies
     MockQueryHandler.assert_called_once_with(
         graph=MockNeo4jGraph.return_value,
-        llm=MockLLM.return_value,
-        embeddings=MockEmbeddings.return_value
+        llm=mock_llm,
+        embeddings=mock_embeddings
     )
 
     # Check that session state was set

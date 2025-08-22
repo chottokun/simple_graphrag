@@ -44,16 +44,28 @@ def test_process_documents(mock_graph, mock_llm, sample_document, sample_graph_d
     Tests if a single document is correctly converted into a GraphDocument.
     """
     with patch('src.data_ingestion.LLMGraphTransformer') as MockTransformer:
-        mock_transformer_instance = MagicMock()
-        mock_transformer_instance.convert_to_graph_documents.return_value = [sample_graph_document]
-        MockTransformer.return_value = mock_transformer_instance
+        with patch('src.data_ingestion.get_graph_transformer_config') as mock_get_config:
+            test_allowed_nodes = ["TestNode1", "TestNode2"]
+            test_allowed_relationships = ["TEST_REL1", "TEST_REL2"]
+            mock_get_config.return_value = {
+                "allowed_nodes": test_allowed_nodes,
+                "allowed_relationships": test_allowed_relationships,
+            }
 
-        ingestor = DataIngestor(graph=mock_graph, llm=mock_llm)
-        graph_documents = ingestor.process_documents([sample_document])
+            mock_transformer_instance = MagicMock()
+            mock_transformer_instance.convert_to_graph_documents.return_value = [sample_graph_document]
+            MockTransformer.return_value = mock_transformer_instance
 
-        MockTransformer.assert_called_once_with(llm=mock_llm)
-        assert graph_documents[0] == sample_graph_document
-        mock_transformer_instance.convert_to_graph_documents.assert_called_once_with([sample_document])
+            ingestor = DataIngestor(graph=mock_graph, llm=mock_llm)
+            graph_documents = ingestor.process_documents([sample_document])
+
+            MockTransformer.assert_called_once_with(
+                llm=mock_llm,
+                allowed_nodes=test_allowed_nodes,
+                allowed_relationships=test_allowed_relationships
+            )
+            assert graph_documents[0] == sample_graph_document
+            mock_transformer_instance.convert_to_graph_documents.assert_called_once_with([sample_document])
 
 def test_store_graph_documents(mock_graph, sample_graph_document):
     """

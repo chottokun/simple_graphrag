@@ -30,20 +30,18 @@
 
 *   **グラフデータベース & ベクトルストア**: Neo4j (Community or AuraDB)
 *   **LLMアプリケーションフレームワーク**: LangChain
-*   **大規模言語モデル (LLM)**: OpenAI GPT-4, GPT-3.5-Turbo など
-*   **埋め込みモデル**: OpenAI text-embedding-ada-02, intfloat/multilingual-e5-large など
+*   **大規模言語モデル (LLM)**: 設定によりOllama, OpenAI, Azure OpenAIなどを利用可能。
+*   **埋め込みモデル**: 設定によりOllama, OpenAIなどを利用可能。
 *   **フロントエンド**: Streamlit
 *   **グラフ可視化**: Pyvis, streamlit-agraph
 
-本設計では以下のモデルを利用する。
-*   **大規模言語モデル (LLM)**: ollamaによる"gemma3:4b-it-qat"を利用する。
-*   **埋め込みモデル(embedding)**: all-MiniLM-L6-v2 (SentenceTransformer model)
+本設計では、環境変数 `LLM_PROVIDER` を設定することで、利用するLLMおよび埋め込みモデルを切り替えることができます。
 
 **3.2. 処理フロー概要**
 
 1.  **データインジェスト (バッチ処理)**
     *   **① データ収集・前処理**: PDFやMarkdown文書を読み込み、意味のある単位（チャンク）に分割します。
-    *   **② ナレッジグラフ構築**: 各チャンクからLLMを用いてエンティティと関係性を抽出し、Neo4jに知識グラフとして格納します。この際、元のチャンクも`Document`ノードとしてグラフに統合します。
+    *   **② ナレッジグラフ構築**: 各チャンクからLLMを用いてエンティティと関係性を抽出し、Neo4jに知識グラフとして格納します。この際、元のチャンクも`Document`ノードとしてグラフに統合します。抽出時には、`LLMGraphTransformer`の`allowed_nodes`および`allowed_relationships`パラメータを用いて、抽出対象を制御し、精度と一貫性を向上させます。
     *   **③ 埋め込みとインデックス作成**: `Document`ノードの内容をベクトル化し、Neo4j上にベクトル検索インデックスとキーワード検索インデックスを構築します。
 
 2.  **検索・応答 (リアルタイム処理)**
@@ -65,25 +63,31 @@
 *   **手順**:
     1.  `UnstructuredFileLoader`等で多様な形式の文書を読み込みます。
     2.  `RecursiveCharacterTextSplitter`で適切なサイズのチャンクに分割します。
-    3.  `LLMGraphTransformer`を使い、各チャンクからノードと関係性を抽出します。高性能なLLM（例: GPT-4）ほど抽出の質が向上します。[blog.langchain.com]
-    4.  `graph.add_graph_documents`でNeo4jに格納します。`include_source=True`で引用元情報が、`baseEntityLabel=True`で全エンティティへの共通ラベルが付与され、後の処理が容易になります。[blog.langchain.com]
+    3.  `LLMGraphTransformer`を使い、各チャンクからノードと関係性を抽出します。この際、環境変数`GRAPH_ALLOWED_NODES`と`GRAPH_ALLOWED_RELATIONSHIPS`で指定されたノードタイプと関係性タイプのみを抽出対象とすることで、抽出の精度と一貫性を高めます。
+    4.  `graph.add_graph_documents`でNeo4jに格納します。`include_source=True`で引用元情報が、`baseEntityLabel=True`で全エンティティへの共通ラベルが付与され、後の処理が容易になります。
 
 *   **サンプルコード1: グラフ構築**
     ```python
     import os
     from langchain_neo4j import Neo4jGraph
     from langchain_experimental.graph_transformers import LLMGraphTransformer
-    from langchain_openai import ChatOpenAI
     from langchain_community.document_loaders import PyPDFLoader
     from langchain.text_splitter import RecursiveCharacterTextSplitter
+    from src.llm_factory import get_llm_and_embeddings
+    from src.config import get_graph_transformer_config
 
-    # --- 1. Neo4jへの接続設定 ---
-    os.environ["NEO4J_URI"] = "bolt://localhost:7687"
-    os.environ["NEO4J_USERNAME"] = "neo4j"
-    os.environ["NEO4J_PASSWORD"] = "your_password"
-    os.environ["OPENAI_API_KEY"] = "your_openai_api_key"
+    # --- 1. Neo4jへの接続設定 (環境変数から読み込み) ---
+    # os.environ["NEO4J_URI"] = "bolt://localhost:7687"
+    # os.environ["NEO4J_USERNAME"] = "neo4j"
+    # os.environ["NEO4J_PASSWORD"] = "your_password"
+    # os.environ["LLM_PROVIDER"] = "ollama" # または "openai", "azure_openai"
+    # os.environ["OLLAMA_MODEL"] = "gemma2"
+    # os.environ["OLLAMA_EMBEDDING_MODEL"] = "nomic-embed-text"
+    # os.environ["GRAPH_ALLOWED_NODES"] = "Person,Organization,Location,Event,Concept,Document"
+    # os.environ["GRAPH_ALLOWED_RELATIONSHIPS"] = "HAS_RELATIONSHIP,LOCATED_IN,PART_OF,MENTIONS,RELATES_TO"
 
     graph = Neo4jGraph()
+    llm, _ = get_llm_and_embeddings() # LLMのみ取得
 
     # --- 2. ドキュメントの読み込みと分割 ---
     loader = PyPDFLoader("path/to/your/document.pdf")
@@ -92,11 +96,12 @@
     )
 
     # --- 3. グラフ抽出と格納 ---
-    # 高性能なモデル（Function Calling対応）が望ましい
-    llm = ChatOpenAI(temperature=0, model_name="gpt-4-turbo")
-    
-    # LLMGraphTransformerの初期化
-    llm_transformer = LLMGraphTransformer(llm=llm)
+    graph_transformer_config = get_graph_transformer_config()
+    llm_transformer = LLMGraphTransformer(
+        llm=llm,
+        allowed_nodes=graph_transformer_config.get("allowed_nodes"),
+        allowed_relationships=graph_transformer_config.get("allowed_relationships")
+    )
 
     # ドキュメントからグラフ表現を抽出
     graph_documents = llm_transformer.convert_to_graph_documents(documents)
@@ -115,7 +120,7 @@
 グラフ構造に加えて、テキストのセマンティックな意味を捉えるためのベクトル検索インフラを整備します。
 
 *   **手順**:
-    1.  `Neo4jVector.from_existing_graph`メソッドを利用します。このメソッドは非常に強力で、以下の処理を自動で行います。[blog.langchain.com]
+    1.  `Neo4jVector.from_existing_graph`メソッドを利用します。このメソッドは非常に強力で、以下の処理を自動で行います。
         *   指定したノード（ここでは`:Document`）に対するベクトルインデックスを作成。
         *   指定したプロパティ（`text`）の内容を埋め込みモデルでベクトル化。
         *   キーワード検索用の全文検索インデックスも同時に作成。
@@ -123,15 +128,17 @@
 *   **サンプルコード2: インデックス構築**
     ```python
     from langchain_community.vectorstores import Neo4jVector
-    from langchain_openai import OpenAIEmbeddings
+    from src.llm_factory import get_llm_and_embeddings
+    from langchain_neo4j import Neo4jGraph
+
+    # (上記で初期化した graph を利用)
+    _, embeddings = get_llm_and_embeddings() # 埋め込みモデルのみ取得
+    graph = Neo4jGraph() # Neo4jGraphのインスタンス化
 
     # --- ベクトルストアとインデックスの作成 ---
-    # 埋め込みモデルの選択
-    embeddings = OpenAIEmbeddings()
-
-    # 既存のグラフからベクトルストアを初期化（インデックスも自動作成）
     vector_store = Neo4jVector.from_existing_graph(
         embedding=embeddings,
+        graph=graph,
         search_type="hybrid", # キーワード検索とベクトル検索の両方を利用
         node_label="Document", # 対象となるノードのラベル
         text_node_properties=["text"], # テキスト内容が格納されているプロパティ
@@ -145,48 +152,62 @@
 ユーザーの質問に対して、構築したグラフとインデックスをフル活用して回答を生成する、システムの心臓部です。
 
 *   **手順**:
-    1.  **キーワード抽出**: ユーザーの質問から、LLMを用いてキーワードやエンティティをリストとして抽出します。これにより、LLMに自由なCypherクエリを生成させるリスクを回避し、システムの安定性を高めます。
-    2.  **ベクトル検索**: 質問全体をベクトル化し、`vector_store.similarity_search`で関連性の高い`Document`チャンクを取得します。
-    3.  **グラフ検索**: 抽出したエンティティリストをパラメータとして使用し、予め定義された安全なCypherクエリテンプレートを実行します。これにより、抽出されたエンティティに関連するノードと関係性を取得します。
-    4.  **コンテキスト統合と回答生成**: ベクトル検索とグラフ検索の両方の結果を統合し、構造化されたコンテキストとしてプロンプトにまとめ、最終的な回答をLLMに生成させます。
+    1.  **ハイブリッド検索**: ユーザーの質問から、`GraphCypherQAChain`を用いて関連するグラフ情報を抽出し、同時にベクトル検索で関連ドキュメントチャンクを取得します。
+    2.  **コンテキスト統合と回答生成**: 収集した情報を統合し、LLMへの入力（プロンプト）を生成します。最終的な回答はLLMに生成させます。
 
-*   **サンプルコード3: 検索と応答生成チェーン（エンティティ抽出方式）**
+*   **サンプルコード3: 検索と応答生成チェーン（GraphCypherQAChain方式）**
     ```python
     from operator import itemgetter
     from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
     from langchain_core.runnables import Runnable, RunnablePassthrough, RunnableLambda
-    from langchain_core.output_parsers import StrOutputParser, CommaSeparatedListOutputParser
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_community.chains.graph_qa.cypher import GraphCypherQAChain
+    from src.llm_factory import get_llm_and_embeddings
+    from langchain_neo4j import Neo4jGraph, Neo4jVector
 
-    # (上記で初期化した graph, llm, vector_store を利用)
+    # (上記で初期化した graph, llm, embeddings を利用)
+    llm, embeddings = get_llm_and_embeddings()
+    graph = Neo4jGraph()
 
-    # --- 1. エンティティ抽出チェーン ---
-    entity_extraction_prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are an expert at extracting key entities from a question."),
-        ("human", "Extract a comma-separated list of entities from the following question: {question}")
-    ])
-    entity_chain = entity_extraction_prompt | llm | CommaSeparatedListOutputParser()
+    # --- 1. ベクトル検索用のリトリーバー ---
+    vector_store = Neo4jVector(
+        embedding=embeddings,
+        graph=graph
+    )
+    vector_retriever = vector_store.as_retriever()
 
-    # --- 2. ベクトル検索用のリトリーバー ---
-    retriever = vector_store.as_retriever()
+    # --- 2. GraphCypherQAChainの初期化 ---
+    cypher_qa_chain = GraphCypherQAChain.from_llm(
+        graph=graph,
+        llm=llm,
+        verbose=True # デバッグ用にTrueに設定
+    )
 
-    # --- 3. グラフ検索用のテンプレートクエリ ---
-    graph_query_template = """
-        MATCH (n)-[r]-(m)
-        WHERE n.id IN $entities OR m.id IN $entities
-        RETURN n, r, m LIMIT 10
-    """
-
-    # --- 4. 全体を統合したチェーン ---
+    # --- 3. 全体を統合したチェーン ---
     def retrieve_all_data(inputs: dict) -> dict:
         question = inputs["question"]
-        entities = entity_chain.invoke({"question": question})
-        vector_context = retriever.invoke(question)
-        graph_data = graph.query(graph_query_template, params={"entities": entities})
+        
+        vector_context = vector_retriever.invoke(question)
+        
+        # GraphCypherQAChainでグラフ情報を取得
+        try:
+            cypher_qa_result = cypher_qa_chain.invoke({"query": question})
+            graph_context = cypher_qa_result.get("result", "")
+            # 可視化用に生のグラフデータを取得する必要がある場合、
+            # cypher_qa_chainの内部で生成されたCypherクエリを解析するか、
+            # 別の方法でグラフデータを取得するロジックを追加検討。
+            # ここでは簡略化のため、cypher_qa_resultをそのまま利用。
+            graph_data_for_viz = graph_context # 仮のデータ、要改善
+        except Exception as e:
+            print(f"GraphCypherQAChain failed: {e}")
+            graph_context = ""
+            graph_data_for_viz = []
+
         return {
             "question": question,
             "vector_context": vector_context,
-            "graph_context": graph_data,
-            "graph_data_for_viz": graph_data, # 可視化用に生のグラフデータを保持
+            "graph_context": graph_context,
+            "graph_data_for_viz": graph_data_for_viz,
         }
 
     prompt_template = PromptTemplate.from_template(
@@ -221,7 +242,7 @@
         )
     )
 
-    # --- 5. チェーンの実行 ---
+    # --- 4. チェーンの実行 ---
     question = "LangChainとNeo4jの関係について教えてください。"
     response = rag_chain.invoke({"question": question})
     print(f"Answer: {response['answer']}")
@@ -242,44 +263,231 @@
     ```python
     import streamlit as st
     from streamlit_agraph import agraph, Node, Edge, Config
+    from src.llm_factory import get_llm_and_embeddings
+    from src.query_handler import QueryHandler
+    from src.data_ingestion import DataIngestor
+    from src.config import get_neo4j_credentials, load_app_config
+    from langchain_neo4j import Neo4jGraph
+    import os
+    import glob
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
+    from langchain_community.document_loaders import PyPDFLoader, UnstructuredMarkdownLoader
 
-    # (上記の rag_chain と、それを呼び出す handle_query 関数をバックエンドとして利用)
+    # アプリケーション設定のロード
+    load_app_config()
 
-    st.title("グラフRAGシステム - 文書検索チャット")
+    # --- キャッシュされたリソースの初期化 ---
+    @st.cache_resource
+    def get_neo4j_graph():
+        neo4j_creds = get_neo4j_credentials()
+        try:
+            return Neo4jGraph(
+                url=neo4j_creds["uri"],
+                username=neo4j_creds["username"],
+                password=neo4j_creds["password"],
+            )
+        except Exception as e:
+            st.error(f"Failed to connect to Neo4j: {e}")
+            st.stop()
 
-    # セッション状態でチャット履歴を管理
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    @st.cache_resource
+    def get_llm_and_embeddings_cached():
+        return get_llm_and_embeddings()
 
-    # 履歴の表示
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            # アシスタントのメッセージの場合、根拠データを表示する
-            if message["role"] == "assistant":
-                graph_context = message.get("graph_data")
-                vector_context = message.get("vector_context")
+    # --- セッション状態の初期化 ---
+    def initialize_session_state():
+        if "query_handler" not in st.session_state:
+            llm, embeddings = get_llm_and_embeddings_cached()
+            st.session_state.query_handler = QueryHandler(
+                graph=get_neo4j_graph(), llm=llm, embeddings=embeddings
+            )
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
 
-                if graph_context or vector_context:
-                    with st.expander("回答の根拠を見る"):
-                        tab1, tab2 = st.tabs(["関連グラフ", "参照ドキュメント"])
-                        with tab1:
-                            # ... (format_graph_data関数を呼び出し、agraphで可視化)
-                            st.info("ここにグラフが表示されます。")
-                        with tab2:
-                            # ... (vector_contextをループして表示)
-                            st.info("ここに参照ドキュメントが表示されます。")
+    # --- データ投入ロジック ---
+    def handle_ingestion():
+        data_path = "./data"
+        if not os.path.exists(data_path):
+            st.sidebar.warning(f"'{data_path}' directory not found.")
+            return
 
-    # ユーザーからの入力
-    if prompt := st.chat_input("質問を入力してください"):
-        st.chat_message("user").markdown(prompt)
-        # バックエンド処理とUIの再描画
-        with st.spinner("考え中..."):
-            handle_query(prompt) # rag_chainを呼び出し、session_stateを更新
-        st.rerun()
+        md_files = glob.glob(os.path.join(data_path, "*.md"))
+        pdf_files = glob.glob(os.path.join(data_path, "*.pdf"))
 
-    ```
+        if not md_files and not pdf_files:
+            st.sidebar.warning(f"No Markdown or PDF files found in '{data_path}'.")
+            return
 
-#### **5. まとめ**
+        with st.status("データ投入を開始します...", expanded=True) as status:
+            try:
+                status.update(label="ステップ 0/4: ドキュメントを読み込んでいます...")
+                documents = []
+                for md_file in md_files:
+                    loader = UnstructuredMarkdownLoader(md_file)
+                    documents.extend(loader.load())
+                for pdf_file in pdf_files:
+                    loader = PyPDFLoader(pdf_file)
+                    documents.extend(loader.load())
 
-本設計書で定義したシステムは、Neo4jとLangChainの強力な機能を組み合わせることで、従来の検索システムでは困難だった文脈的な情報探索を実現します。文書から半自動で構築された知識グラフは、データの関係性を可視化・分析するための強力な基盤となり、ベクトル検索とのハイブリッドアプローチにより、検索精度と回答品質の向上が期待できます。
+                if not documents:
+                    status.update(label="ドキュメントの読み込みに失敗しました。", state="error", expanded=False)
+                    st.sidebar.error("Failed to load any documents.")
+                    return
+                st.write(f"✓ {len(documents)}個のドキュメントを読み込みました。")
+
+                text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
+                split_documents = text_splitter.split_documents(documents)
+                st.write(f"✓ {len(documents)}個のドキュメントを{len(split_documents)}個のチャンクに分割しました。")
+
+                llm, embeddings = get_llm_and_embeddings_cached()
+                ingestor = DataIngestor(
+                    graph=get_neo4j_graph(), llm=llm, embeddings=embeddings
+                )
+
+                status.update(label=f"ステップ 1/4: {len(split_documents)}個のチャンクをグラフ構造に変換しています...")
+                
+                graph_documents = []
+                progress_bar = st.progress(0, text="チャンクの処理状況")
+                
+                for i, doc in enumerate(split_documents):
+                    graph_doc = ingestor.process_single_document(doc)
+                    graph_documents.append(graph_doc)
+                    progress = (i + 1) / len(split_documents)
+                    progress_bar.progress(progress, text=f"チャンク {i + 1}/{len(split_documents)} を処理中")
+
+                st.write(f"✓ {len(split_documents)}個のチャンクから{len(graph_documents)}個のグラフドキュメントを生成しました。")
+
+                status.update(label="ステップ 2/4: グラフドキュメントをNeo4jに格納しています...")
+                ingestor.store_graph_documents(graph_documents)
+                st.write("✓ グラフドキュメントをNeo4jに正常に格納しました。")
+
+                status.update(label="ステップ 3/4: ベクトルインデックスを作成しています... (時間がかかる場合があります)")
+                ingestor.create_vector_index()
+                st.write("✓ ベクトルインデックスを正常に作成しました。")
+
+                status.update(label="データ投入が完了しました！", state="complete", expanded=False)
+                st.sidebar.success(f"Successfully ingested {len(documents)} documents!")
+
+            except Exception as e:
+                status.update(label=f"エラーが発生しました: {e}", state="error", expanded=True)
+                st.sidebar.error(f"An error occurred during ingestion: {e}")
+
+    # --- チャットロジック ---
+    def handle_query(prompt: str):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+
+        rag_chain = st.session_state.query_handler.get_full_chain()
+        response = rag_chain.invoke({"question": prompt})
+
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": response.get("answer", "申し訳ありません、回答を生成できませんでした。"),
+                "graph_data": response.get("graph_data", []),
+                "vector_context": response.get("vector_context", []),
+            }
+        )
+
+    # --- ヘルパー関数 ---
+    def format_graph_data(graph_data: list[dict]) -> tuple[list[Node], list[Edge]]:
+        nodes = []
+        edges = []
+        node_ids = set()
+
+        if not isinstance(graph_data, list):
+            return nodes, edges
+
+        for record in graph_data:
+            source_node_data = record.get("n")
+            target_node_data = record.get("m")
+            relationship = record.get("r")
+
+            if not all((source_node_data, target_node_data, relationship)):
+                continue
+
+            source_id = source_node_data.get("id")
+            target_id = target_node_data.get("id")
+
+            if not all((source_id, target_id)):
+                continue
+
+            if source_id not in node_ids:
+                nodes.append(Node(id=source_id, label=source_id, size=15))
+                node_ids.add(source_id)
+
+            if target_id not in node_ids:
+                nodes.append(Node(id=target_id, label=target_id, size=15))
+                node_ids.add(target_id)
+
+            try:
+                rel_type = relationship.type
+            except AttributeError:
+                rel_type = str(relationship)
+
+            edges.append(Edge(source=source_id, target=target_id, label=rel_type))
+
+        return nodes, edges
+
+
+    # --- メインアプリケーション ---
+    def main():
+        st.title("グラフRAGチャット")
+
+        with st.sidebar:
+            st.header("データ投入")
+            st.markdown(
+                "ローカルの`./data`ディレクトリにあるMarkdownやPDFファイルをNeo4jに投入し、ベクトルインデックスを作成します。"
+            )
+            if st.button("データを取り込む"):
+                handle_ingestion()
+
+        initialize_session_state()
+
+        for i, message in enumerate(st.session_state.messages):
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+                if message["role"] == "assistant":
+                    graph_context = message.get("graph_data")
+                    vector_context = message.get("vector_context")
+
+                    if graph_context or vector_context:
+                        with st.expander("回答の根拠を見る (View Sources)"):
+                            tab1, tab2 = st.tabs(
+                                ["関連グラフ (Related Graph)", "参照ドキュメント (Referenced Docs)"]
+                            )
+                            with tab1:
+                                if graph_context:
+                                    nodes, edges = format_graph_data(graph_context)
+                                    if nodes:
+                                        config = Config(
+                                            width=750,
+                                            height=400 + i,
+                                            directed=True,
+                                            physics=True,
+                                            hierarchical=False,
+                                        )
+                                        agraph(nodes=nodes, edges=edges, config=config)
+                                    else:
+                                        st.info("関連するグラフデータは見つかりませんでした。")
+                                else:
+                                    st.info("関連するグラフデータは見つかりませんでした。")
+
+                            with tab2:
+                                if vector_context:
+                                    for doc in vector_context:
+                                        st.markdown(
+                                            f"**Source:** `{doc.metadata.get('source', 'N/A').split('/')[-1]}`"
+                                        )
+                                        st.markdown(f"> {doc.page_content.replace('_n', ' ')}")
+                                        st.divider()
+                                else:
+                                    st.info("参照されたドキュメントはありません。")
+
+        if prompt := st.chat_input("質問を入力してください"):
+            st.chat_message("user").markdown(prompt)
+            with st.spinner("考え中..."):
+                handle_query(prompt)
+            st.rerun()
+
+    if __name__ == "__main__":
+        main()

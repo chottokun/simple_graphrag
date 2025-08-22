@@ -16,26 +16,27 @@ The primary goal of this project is to build a sophisticated RAG system that goe
 
 ## System Architecture
 
+For a detailed explanation of the system's architecture, including component interactions and design decisions, please refer to the [System Architecture Documentation](./docs/Architecture.md).
+
 The system is composed of two main workflows: Data Ingestion and Query Handling.
 
 ### 1. Data Ingestion Flow
 
 1.  **File Upload**: User uploads documents via the Streamlit sidebar.
 2.  **Document Loading & Splitting**: The system loads the content and splits it into smaller, manageable chunks.
-3.  **Graph Extraction**: Each chunk is passed to an LLM (`LLMGraphTransformer`) which extracts entities (nodes) and relationships (edges).
+3.  **Graph Extraction**: Each chunk is passed to an LLM (`LLMGraphTransformer`) which extracts entities (nodes) and relationships (edges). This process now respects configurable `allowed_nodes` and `allowed_relationships` to improve extraction accuracy.
 4.  **Graph Storage**: The extracted graph data, along with the original text chunk (as a `Document` node), is stored in the Neo4j database.
 5.  **Vector Indexing**: The text content of each `Document` node is converted into a vector embedding and stored in a Neo4j vector index for efficient similarity search.
 
 ### 2. Query Handling Flow
 
 1.  **User Query**: A user asks a question through the Streamlit chat interface.
-2.  **Entity Extraction**: The user's query is sent to an LLM to extract key entities.
-3.  **Hybrid Retrieval**:
+2.  **Hybrid Retrieval**:
     *   **Vector Search**: The entire query is used to find the most semantically similar `Document` nodes from the vector index.
-    *   **Graph Search**: The extracted entities are used to query the Neo4j graph, retrieving related nodes and relationships.
-4.  **Context Consolidation**: The results from both vector and graph searches are combined into a comprehensive context.
-5.  **Answer Generation**: The consolidated context and the original query are passed to an LLM, which generates a final, context-aware answer.
-6.  **Display**: The answer, along with the visual graph context and source text chunks, is displayed in the UI.
+    *   **Graph Search**: Instead of fixed templates, an LLM dynamically generates Cypher queries using `GraphCypherQAChain` based on the user's question and the graph schema, retrieving relevant nodes and relationships.
+3.  **Context Consolidation**: The results from both vector and graph searches are combined into a comprehensive context.
+4.  **Answer Generation**: The consolidated context and the original query are passed to an LLM, which generates a final, context-aware answer.
+5.  **Display**: The answer, along with the visual graph context and source text chunks, is displayed in the UI.
 
 ## Project Structure
 
@@ -79,13 +80,32 @@ The system is composed of two main workflows: Data Ingestion and Query Handling.
     ```bash
     cp .env.example .env
     ```
-    The default values in `.env.example` are configured to work with the provided `neo4j-docker-compose.yaml`. You will need to ensure the Ollama models are available at your `OLLAMA_BASE_URL`.
+        The default values in `.env.example` are configured to work with the provided `neo4j-docker-compose.yaml`.
 
     **Required `.env` variables:**
     -   `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`
+    -   `LLM_PROVIDER`: Specify `ollama`, `openai`, or `azure_openai`.
+
+    **If `LLM_PROVIDER=ollama`:**
     -   `OLLAMA_BASE_URL`: The base URL for your Ollama instance.
     -   `OLLAMA_MODEL`: The name of the main chat model (e.g., `gemma:2b-instruct-q4_0`).
     -   `OLLAMA_EMBEDDING_MODEL`: The name of the embedding model (e.g., `mxbai-embed-large`).
+
+    **If `LLM_PROVIDER=openai`:**
+    -   `OPENAI_API_KEY`: Your OpenAI API key.
+    -   `OPENAI_MODEL`: (Optional) The OpenAI model name (default: `gpt-4o-mini`).
+    -   `OPENAI_EMBEDDING_MODEL`: (Optional) The OpenAI embedding model name (default: `text-embedding-3-small`).
+
+    **If `LLM_PROVIDER=azure_openai`:**
+    -   `AZURE_OPENAI_API_KEY`: Your Azure OpenAI API key.
+    -   `AZURE_OPENAI_ENDPOINT`: Your Azure OpenAI endpoint.
+    -   `AZURE_OPENAI_API_VERSION`: (Optional) API version (default: `2024-02-01`).
+    -   `AZURE_OPENAI_MODEL`: Your deployment name for the LLM.
+    -   `AZURE_OPENAI_EMBEDDING_MODEL`: Your deployment name for the embedding model.
+
+    **Graph Transformer Configuration:**
+    -   `GRAPH_ALLOWED_NODES`: Comma-separated list of allowed node types for graph extraction (e.g., `Person,Organization,Location`).
+    -   `GRAPH_ALLOWED_RELATIONSHIPS`: Comma-separated list of allowed relationship types for graph extraction (e.g., `HAS_RELATIONSHIP,LOCATED_IN`).
 
 3.  **Install Python dependencies:**
     ```bash
@@ -100,12 +120,13 @@ The system is composed of two main workflows: Data Ingestion and Query Handling.
     docker-compose -f neo4j-docker-compose.yaml up -d
     ```
 
-2.  **Pull Ollama models:**
-    Make sure the models specified in your `.env` file are available in your Ollama instance.
+2.  **Prepare LLM models:**
+    If you are using Ollama, make sure the models specified in your `.env` file are available in your Ollama instance. For example:
     ```bash
     ollama pull gemma:2b-instruct-q4_0
     ollama pull mxbai-embed-large
     ```
+    If you are using OpenAI or Azure OpenAI, ensure your API keys are correctly configured in your `.env` file.
 
 3.  **Run the Streamlit application:**
     ```bash

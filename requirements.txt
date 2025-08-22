@@ -11,4 +11,5 @@ pypdf
 neo4j
 langchain-neo4j
 langchain-ollama
+langchain-openai
 markdown

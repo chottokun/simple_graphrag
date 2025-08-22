@@ -5,11 +5,10 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_neo4j import Neo4jGraph
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredMarkdownLoader
 from langchain_core.documents import Document
-from langchain_ollama.llms import OllamaLLM
-from langchain_ollama.embeddings import OllamaEmbeddings
 from streamlit_agraph import Node, Edge, agraph, Config
 
-from src.config import get_neo4j_credentials, get_ollama_config, load_app_config
+from src.config import get_neo4j_credentials, load_app_config
+from src.llm_factory import get_llm_and_embeddings
 from src.query_handler import QueryHandler
 from src.data_ingestion import DataIngestor
 
@@ -32,36 +31,20 @@ def get_neo4j_graph():
         st.stop()
 
 @st.cache_resource
-def get_llm():
-    """Initializes and returns an OllamaLLM instance."""
-    ollama_config = get_ollama_config()
-    try:
-        return OllamaLLM(
-            model=ollama_config["model"], base_url=ollama_config["base_url"]
-        )
-    except Exception as e:
-        st.error(f"Failed to connect to Ollama (LLM): {e}")
-        st.stop()
-
-@st.cache_resource
-def get_embeddings():
-    """Initializes and returns an OllamaEmbeddings instance."""
-    ollama_config = get_ollama_config()
-    try:
-        return OllamaEmbeddings(
-            model=ollama_config["embedding_model"],
-            base_url=ollama_config["base_url"],
-        )
-    except Exception as e:
-        st.error(f"Failed to connect to Ollama (Embeddings): {e}")
-        st.stop()
+def get_llm_and_embeddings_cached():
+    """
+    Initializes and returns the appropriate LLM and Embeddings model
+    based on the configuration in src/config.py, with Streamlit caching.
+    """
+    return get_llm_and_embeddings()
 
 # --- Session State Initialization ---
 def initialize_session_state():
     """Initializes session state variables."""
     if "query_handler" not in st.session_state:
+        llm, embeddings = get_llm_and_embeddings_cached()
         st.session_state.query_handler = QueryHandler(
-            graph=get_neo4j_graph(), llm=get_llm(), embeddings=get_embeddings()
+            graph=get_neo4j_graph(), llm=llm, embeddings=embeddings
         )
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -107,8 +90,9 @@ def handle_ingestion():
             split_documents = text_splitter.split_documents(documents)
             st.write(f"✓ {len(documents)}個のドキュメントを{len(split_documents)}個のチャンクに分割しました。")
 
+            llm, embeddings = get_llm_and_embeddings_cached()
             ingestor = DataIngestor(
-                graph=get_neo4j_graph(), llm=get_llm(), embeddings=get_embeddings()
+                graph=get_neo4j_graph(), llm=llm, embeddings=embeddings
             )
 
             # --- ステップ1: グラフ構造の処理 (最も時間がかかる部分) ---

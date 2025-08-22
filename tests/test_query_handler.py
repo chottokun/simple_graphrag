@@ -51,7 +51,7 @@ def test_retriever_creation(mock_graph, mock_llm, mock_embeddings):
 
 def test_full_chain_assembly_and_invocation(mock_graph, mock_llm, mock_embeddings):
     """
-    Tests that the full RAG chain (with entity extraction) is assembled
+    Tests that the full RAG chain (with GraphCypherQAChain) is assembled
     and invokes its components correctly.
     """
     # Arrange
@@ -60,50 +60,40 @@ def test_full_chain_assembly_and_invocation(mock_graph, mock_llm, mock_embedding
     mock_retriever = MagicMock(spec=Runnable)
     mock_retriever.invoke.return_value = mock_docs
 
-    mock_entities = ["LangChain", "Neo4j"]
-    mock_entity_chain = MagicMock(spec=Runnable)
-    mock_entity_chain.invoke.return_value = mock_entities
+    # 2. Mock GraphCypherQAChain
+    with patch('src.query_handler.GraphCypherQAChain') as MockGraphCypherQAChain:
+        mock_cypher_qa_chain_instance = MagicMock()
+        mock_cypher_qa_chain_instance.invoke.return_value = {"query": "test question", "result": "Graph context from Cypher QA Chain"}
+        MockGraphCypherQAChain.from_llm.return_value = mock_cypher_qa_chain_instance
 
-    # 2. Mock the graph query result
-    mock_graph_data = [{"n": "a", "r": "b", "m": "c"}]
-    mock_graph.query.return_value = mock_graph_data
+        # 3. Set up the handler and mock its component-getter methods
+        handler = QueryHandler(graph=mock_graph, llm=mock_llm, embeddings=mock_embeddings)
+        handler.get_vector_retriever = MagicMock(return_value=mock_retriever)
 
-    # 3. Set up the handler and mock its component-getter methods
-    handler = QueryHandler(graph=mock_graph, llm=mock_llm, embeddings=mock_embeddings)
-    handler.get_vector_retriever = MagicMock(return_value=mock_retriever)
-    handler.get_entity_extraction_chain = MagicMock(return_value=mock_entity_chain)
+        # Act
+        full_chain = handler.get_full_chain()
+        result = full_chain.invoke({"question": "test question"})
 
-    # Act
-    full_chain = handler.get_full_chain()
-    result = full_chain.invoke({"question": "test question"})
+        # Assert
+        # 1. Check that the component getters were called
+        handler.get_vector_retriever.assert_called_once()
 
-    # Assert
-    # 1. Check that the component getters were called
-    handler.get_vector_retriever.assert_called_once()
-    handler.get_entity_extraction_chain.assert_called_once()
+        # 2. Check that the retriever was invoked
+        mock_retriever.invoke.assert_called_with("test question")
 
-    # 2. Check that the retriever and entity chain were invoked
-    mock_retriever.invoke.assert_called_with("test question")
-    mock_entity_chain.invoke.assert_called_with({"question": "test question"})
+        # 3. Check that GraphCypherQAChain was initialized and invoked
+        MockGraphCypherQAChain.from_llm.assert_called_once_with(
+            graph=mock_graph,
+            llm=mock_llm,
+            verbose=True
+        )
+        mock_cypher_qa_chain_instance.invoke.assert_called_once_with({"query": "test question"})
 
-    # 3. Check that the graph query was run with the correct template and params
-    expected_query = """
-            MATCH (n)-[r]-(m)
-            WHERE n.id IN $entities OR m.id IN $entities
-            RETURN n, r, m
-            LIMIT 20
-        """
-    # We need to use mock_calls to check args and kwargs of the same call
-    call_args, call_kwargs = mock_graph.query.call_args
-    # Normalize whitespace in the query string for comparison
-    assert " ".join(call_args[0].split()) == " ".join(expected_query.split())
-    assert call_kwargs == {"params": {"entities": mock_entities}}
+        # 4. Check that the final LLM was invoked.
+        mock_llm.invoke.assert_called_once()
 
-    # 4. Check that the final LLM was invoked.
-    mock_llm.invoke.assert_called_once()
-
-    # 5. Check that the final output is a dictionary with the correct structure
-    assert isinstance(result, dict)
-    assert result["answer"] == "Final Answer"  # From the mock_llm fixture
-    assert result["graph_data"] == mock_graph_data
-    assert result["vector_context"] == mock_docs
+        # 5. Check that the final output is a dictionary with the correct structure
+        assert isinstance(result, dict)
+        assert result["answer"] == "Final Answer"  # From the mock_llm fixture
+        assert result["graph_data"] == "Graph context from Cypher QA Chain" # From mock_cypher_qa_chain_instance
+        assert result["vector_context"] == mock_docs

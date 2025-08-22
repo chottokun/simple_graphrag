@@ -5,6 +5,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_experimental.graph_transformers import LLMGraphTransformer
 from langchain_community.vectorstores import Neo4jVector
 from langchain_neo4j import Neo4jGraph
+from src.config import get_graph_transformer_config
 
 class DataIngestor:
     """
@@ -29,8 +30,17 @@ class DataIngestor:
         self.graph = graph
         self.llm = llm
         self.embeddings = embeddings
+
+        graph_transformer_config = get_graph_transformer_config()
+        allowed_nodes = graph_transformer_config.get("allowed_nodes")
+        allowed_relationships = graph_transformer_config.get("allowed_relationships")
+
         if llm:
-            self.llm_transformer = LLMGraphTransformer(llm=llm)
+            self.llm_transformer = LLMGraphTransformer(
+                llm=llm,
+                allowed_nodes=allowed_nodes,
+                allowed_relationships=allowed_relationships
+            )
         else:
             self.llm_transformer = None
 
