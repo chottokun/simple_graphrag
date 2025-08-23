@@ -1,6 +1,6 @@
 services:
   neo4j:
-    image: neo4j:latest
+    image: neo4j:5.21.0
     volumes:
         - /$HOME/neo4j/logs:/logs
         - /$HOME/neo4j/config:/config
@@ -17,7 +17,7 @@ services:
       - "7687:7687"
     # restart: always
   ollama:
-    image: ollama/ollama
+    image: ollama/ollama:0.2.5
     deploy:
       resources:
         reservations:

@@ -1,5 +1,7 @@
 # Hybrid Graph RAG System (Neo4j, LangChain, Ollama)
 
+[![Python CI](https://github.com/your-username/your-repo/actions/workflows/ci.yml/badge.svg)](https://github.com/your-username/your-repo/actions/workflows/ci.yml)
+
 This project implements an advanced Retrieval-Augmented Generation (RAG) chat system using a hybrid approach that combines vector search and knowledge graph search. It leverages Neo4j for graph-based data storage and retrieval, LangChain for orchestrating LLM interactions, and Ollama for running local language models. The frontend is built with Streamlit, allowing users to ingest documents and interact with the chat system through a user-friendly interface.
 
 ## Project Goal
@@ -115,12 +117,20 @@ The system is composed of two main workflows: Data Ingestion and Query Handling.
 ### 3. Running the Application
 
 1.  **Start external services (Neo4j & Ollama):**
-    Use the provided Docker Compose file to start the necessary services.
+    Use the provided Docker Compose file to start the necessary services. The image versions are pinned for stability.
     ```bash
-    docker-compose -f neo4j-docker-compose.yaml up -d
+    docker compose -f neo4j-docker-compose.yaml up -d
     ```
+    *Note: `docker-compose` (V1) is deprecated. The command `docker compose` (V2) is recommended.*
 
-2.  **Prepare LLM models:**
+2.  **Run the Streamlit application:**
+    When you run the application, it will first perform a health check to ensure it can connect to the Neo4j database.
+    ```bash
+    streamlit run app.py
+    ```
+    The application will be available at `http://localhost:8501`.
+
+3.  **Prepare LLM models:**
     If you are using Ollama, make sure the models specified in your `.env` file are available in your Ollama instance. For example:
     ```bash
     ollama pull gemma:2b-instruct-q4_0
@@ -146,13 +156,18 @@ The system is composed of two main workflows: Data Ingestion and Query Handling.
 
 This project uses `pytest` for testing. The tests are divided into unit tests (which use mocks) and online tests (which require live connections to services).
 
--   **Run all unit tests:**
+-   **Run all tests:**
+    This will run both unit (offline) and online tests. Make sure the Docker services are running.
     ```bash
     pytest
     ```
 
--   **Run online connection tests:**
-    These tests verify the connection to live Neo4j and Ollama instances. Make sure the services are running before executing.
+-   **Run only unit tests (offline):**
     ```bash
-    pytest -m online
+    pytest -m "not online"
+    ```
+-   **Run tests with coverage:**
+    To see a report of which lines of code are covered by tests, run:
+    ```bash
+    pytest --cov=src
     ```

@@ -15,20 +15,19 @@ from src.data_ingestion import DataIngestor
 # Load configuration at the top
 load_app_config()
 
+from src.health_check import check_neo4j_connectivity
+
 # --- Caching Resource Initialization ---
 @st.cache_resource
 def get_neo4j_graph():
     """Initializes and returns a Neo4jGraph instance."""
     neo4j_creds = get_neo4j_credentials()
-    try:
-        return Neo4jGraph(
-            url=neo4j_creds["uri"],
-            username=neo4j_creds["username"],
-            password=neo4j_creds["password"],
-        )
-    except Exception as e:
-        st.error(f"Failed to connect to Neo4j: {e}")
-        st.stop()
+    # The health check now handles connection errors upfront.
+    return Neo4jGraph(
+        url=neo4j_creds["uri"],
+        username=neo4j_creds["username"],
+        password=neo4j_creds["password"],
+    )
 
 @st.cache_resource
 def get_llm_and_embeddings_cached():
@@ -206,6 +205,21 @@ def format_graph_data(graph_data: list[dict]) -> tuple[list[Node], list[Edge]]:
     return nodes, edges
 
 
+# --- Health Check ---
+def run_health_checks():
+    """Runs health checks for services and displays status."""
+    st.header("System Health Check")
+
+    # Check Neo4j Connectivity
+    with st.spinner("Checking Neo4j connection..."):
+        if check_neo4j_connectivity():
+            st.success("✅ Neo4j is connected.")
+            return True
+        else:
+            st.error("❌ Failed to connect to Neo4j.")
+            st.warning("Please ensure the Neo4j Docker container is running and the credentials in your `.env` file are correct.")
+            st.stop()
+
 # --- Main Application ---
 def main():
     """The main function that runs the Streamlit application."""
@@ -276,4 +290,6 @@ def main():
         st.rerun()
 
 if __name__ == "__main__":
-    main()
+    # Perform health checks before running the main app
+    if run_health_checks():
+        main()

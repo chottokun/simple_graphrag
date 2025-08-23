@@ -1,6 +1,7 @@
 langchain
 streamlit
 pytest
+pytest-cov
 python-dotenv
 langchain-community
 langchain-experimental
