@@ -10,7 +10,42 @@
 2.  **検索・応答 (Retrieval and Response)**: ユーザーのクエリに基づいて関連情報を検索し、LLMを用いて回答を生成するリアルタイム処理。
 3.  **ユーザーインターフェース (User Interface)**: Streamlitを用いたチャット形式のインタフェース。
 
-![System Architecture Diagram Placeholder - A diagram showing data ingestion, Neo4j (graph and vector store), LLM, and Streamlit UI with arrows indicating data flow.]
+```mermaid
+graph TD
+    subgraph User Interface
+        UI(Streamlit UI)
+    end
+
+    subgraph Backend
+        QH(QueryHandler) -- Manages --> RAG_Chain(RAG Chain)
+        DF(DataIngestor) -- Manages --> Graph_Transformer(LLMGraphTransformer)
+        LLM_Factory(LLM Factory) -- Creates --> LLM_Embeddings(LLM & Embeddings)
+    end
+
+    subgraph Data Store
+        Neo4j(Neo4j Database)
+        Neo4j -- Stores --> Graph_Store(Knowledge Graph)
+        Neo4j -- Stores --> Vector_Store(Vector Index)
+    end
+
+    subgraph External Systems
+        LLM_Provider(LLM Provider: Ollama, OpenAI, etc.)
+    end
+
+    %% Data Flow
+    UI -- User Query --> QH
+    QH -- Invokes --> RAG_Chain
+    RAG_Chain -- Hybrid Search --> Neo4j
+    RAG_Chain -- Generates Answer with --> LLM_Provider
+    LLM_Provider -- Provides Models --> LLM_Embeddings
+    QH -- Returns Answer --> UI
+
+    %% Ingestion Flow
+    UI -- Uploads File --> DF
+    DF -- Uses --> Graph_Transformer
+    Graph_Transformer -- Extracts Graph with --> LLM_Provider
+    DF -- Ingests Data --> Neo4j
+```
 
 ## 2. 主要コンポーネント
 
